@@ -1,0 +1,1412 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>冠軍羽球館預約系統 - 旗艦版</title>
+
+  <!-- 載入 React 與 Babel -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js" crossorigin></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.22.17/babel.min.js"></script>
+
+  <!-- 載入 Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- 載入 FontAwesome 圖示庫 -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+  <style>
+    /* 自訂滾動條樣式 */
+    .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+    .custom-scrollbar::-webkit-scrollbar-track { background: rgba(30, 58, 138, 0.5); border-radius: 8px; }
+    .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(59, 130, 246, 0.5); border-radius: 8px; }
+    .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(96, 165, 250, 0.8); }
+    body { margin: 0; padding: 0; font-family: sans-serif; background-color: #1e3a8a; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    // 自訂羽毛球圖示元件
+    const BadmintonIcon = ({ className }) => (
+      <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ display: 'inline-block', width: '1em', height: '1em' }}>
+        <path d="M7 17l-3 3 3 3 3-3" />
+        <path d="M11 13l-4 4" />
+        <path d="M12.5 11.5l-3 3" />
+        <path d="M14.5 9.5l-2.5 2.5" />
+        <path d="M17 7c2 2 3.5 1.5 5-1-2.5-1.5-3-3-1-5-2.5 1.5-3 3-1 5" />
+        <path d="M21 2c-3.5 0-6.5 2-8 5.5l-5 5c-1 1-1.5 2.5-1 4s2 2.5 3 2.5 2.5-1 4-1l5-5c3.5-1.5 5.5-4.5 5.5-8z" />
+        <path d="M10 18a2 2 0 100-4 2 2 0 000 4z" />
+      </svg>
+    );
+
+    const compressImage = (file, maxWidth = 800) => {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.readAsDataURL(file);
+        reader.onload = (event) => {
+          const img = new Image();
+          img.src = event.target.result;
+          img.onload = () => {
+            const canvas = document.createElement('canvas');
+            const ratio = maxWidth / img.width;
+            canvas.width = maxWidth;
+            canvas.height = img.height * ratio;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            resolve(canvas.toDataURL('image/jpeg', 0.7));
+          };
+          img.onerror = (err) => reject(err);
+        };
+      });
+    };
+
+    function App() {
+      const [view, setView] = useState('login');
+      const [step, setStep] = useState(1);
+      const [isFetchingData, setIsFetchingData] = useState(false);
+
+      // === 會員與系統資料庫 ===
+      const [users, setUsers] = useState([]);
+      const [currentUser, setCurrentUser] = useState(null);
+      const [authData, setAuthData] = useState({ name: '', phone: '', email: '', password: '', account: '', code: '' });
+      const [authError, setAuthError] = useState('');
+      const [resetMessage, setResetMessage] = useState('');
+      const [forgotStep, setForgotStep] = useState(1);
+
+      // === 預約與後台狀態 ===
+      const [bookingData, setBookingData] = useState({ date: '', times: [], court: [], name: '', screenshot: null });
+      const [bookings, setBookings] = useState([]);
+      const [openPlayOverrides, setOpenPlayOverrides] = useState({}); // { 'YYYY-MM-DD': ['1', '2'] }
+
+      const [adminPasswordInput, setAdminPasswordInput] = useState('');
+      const [loginError, setLoginError] = useState('');
+      const [adminTab, setAdminTab] = useState('list'); // 'list', 'calendar', 'users', 'openplay', 'settings'
+      const [listFilter, setListFilter] = useState('all');
+      const [viewImage, setViewImage] = useState(null);
+      const [userSearchTerm, setUserSearchTerm] = useState('');
+
+      // 管理員帳密狀態
+      const [adminAccounts, setAdminAccounts] = useState({ main: 'lu2588666', sub: 'sub123' });
+      const [currentAdmin, setCurrentAdmin] = useState(null); // { role: 'main' | 'sub' }
+
+      const getLocalDateString = (dateObj) => {
+        const offset = dateObj.getTimezoneOffset() * 60000;
+        return new Date(dateObj.getTime() - offset).toISOString().split('T')[0];
+      };
+      const today = new Date();
+      const todayString = getLocalDateString(today);
+
+      useEffect(() => {
+        const loadData = () => {
+          setIsFetchingData(true);
+          try {
+            const localUsers = JSON.parse(localStorage.getItem('champion_users')) || [];
+            let localBookings = JSON.parse(localStorage.getItem('champion_bookings')) || [];
+            const localOverrides = JSON.parse(localStorage.getItem('champion_openplay')) || {};
+            const localAdmin = JSON.parse(localStorage.getItem('champion_admin')) || { main: 'lu2588666', sub: 'sub123' };
+
+            // 系統啟動時，自動清理「過期」預約的轉帳截圖，只保留文字紀錄
+            let updated = false;
+            localBookings = localBookings.map(b => {
+              if (b.date < todayString && b.screenshot !== null) {
+                updated = true;
+                return { ...b, screenshot: null };
+              }
+              return b;
+            });
+            if (updated) localStorage.setItem('champion_bookings', JSON.stringify(localBookings));
+
+            setUsers(localUsers);
+            setBookings(localBookings);
+            setOpenPlayOverrides(localOverrides);
+            setAdminAccounts(localAdmin);
+          } catch (e) {
+            console.error("資料讀取失敗", e);
+          } finally {
+            setIsFetchingData(false);
+          }
+        };
+
+        loadData();
+
+        const handleStorageChange = (e) => {
+          if (e.key === 'champion_users') setUsers(JSON.parse(e.newValue) || []);
+          if (e.key === 'champion_bookings') setBookings(JSON.parse(e.newValue) || []);
+          if (e.key === 'champion_openplay') setOpenPlayOverrides(JSON.parse(e.newValue) || {});
+          if (e.key === 'champion_admin') setAdminAccounts(JSON.parse(e.newValue) || { main: 'lu2588666', sub: 'sub123' });
+        };
+        window.addEventListener('storage', handleStorageChange);
+        return () => window.removeEventListener('storage', handleStorageChange);
+      }, []);
+
+      const saveUsers = (newUsers) => { setUsers(newUsers); localStorage.setItem('champion_users', JSON.stringify(newUsers)); };
+      const saveBookings = (newBookings) => { setBookings(newBookings); localStorage.setItem('champion_bookings', JSON.stringify(newBookings)); };
+      const saveOpenPlayOverrides = (newOverrides) => { setOpenPlayOverrides(newOverrides); localStorage.setItem('champion_openplay', JSON.stringify(newOverrides)); };
+      const saveAdminAccounts = (newAccts) => { setAdminAccounts(newAccts); localStorage.setItem('champion_admin', JSON.stringify(newAccts)); };
+
+      const [showBulkModal, setShowBulkModal] = useState(false);
+      const [bulkData, setBulkData] = useState({ name: '', startDate: '', weeks: 4, times: [], courts: [] });
+      const [bulkConflicts, setBulkConflicts] = useState([]);
+      const maxDateObj = new Date(today);
+      maxDateObj.setDate(maxDateObj.getDate() + 7);
+      const maxDateString = getLocalDateString(maxDateObj);
+
+      const [calendarDate, setCalendarDate] = useState(new Date(today.getFullYear(), today.getMonth(), 1));
+      const [selectedGridDate, setSelectedGridDate] = useState(todayString);
+      const [opManageDate, setOpManageDate] = useState(todayString);
+      const [editingOpCourts, setEditingOpCourts] = useState([]);
+
+      const displayTime = (timeVal) => {
+        const h = parseInt(timeVal.split(':')[0], 10);
+        return `${h.toString().padStart(2, '0')}:00 - ${(h + 1).toString().padStart(2, '0')}:00`;
+      };
+
+      const allTimeSlots = [];
+      for (let h = 7; h <= 21; h++) { allTimeSlots.push(`${h.toString().padStart(2, '0')}:00`); }
+
+      const getOpenPlayCourts = (dateString) => {
+        if (!dateString) return [];
+        // 若有主管理員手動調整的覆蓋紀錄，優先使用 (包含空陣列 []，代表包場模式取消暢打)
+        if (openPlayOverrides[dateString] !== undefined) return openPlayOverrides[dateString];
+
+        const day = new Date(dateString).getDay();
+        // 平日 (週一~週五) 預設保留第 2 場地
+        if (day >= 1 && day <= 5) return ["2"];
+        // 假日 (週六、日) 預設保留第 2, 3, 4 場地
+        return ["2", "3", "4"];
+      };
+
+      const getOpenPlayTimes = (dateString) => {
+        const day = new Date(dateString).getDay();
+        if (day >= 1 && day <= 5) return ["12:00", "13:00", "14:00", "15:00", "16:00"]; // 平日 12-17
+        return ["18:00", "19:00", "20:00", "21:00"]; // 假日 18-22
+      };
+
+      const isCourtBlockedByOpenPlay = (dateStr, timeStr, courtStr) => {
+        const opTimes = getOpenPlayTimes(dateStr);
+        const opCourts = getOpenPlayCourts(dateStr);
+        return opTimes.includes(timeStr) && opCourts.includes(courtStr);
+      };
+
+      const getAvailableTimes = (dateString) => {
+        if (!dateString) return [];
+        const date = new Date(dateString);
+        const day = date.getDay();
+        const isWeekend = day === 0 || day === 6;
+        const startHour = isWeekend ? 7 : 9;
+        const endHour = 22;
+
+        const times = [];
+        const now = new Date();
+        const isToday = date.toDateString() === now.toDateString();
+        const currentHour = now.getHours();
+
+        for (let h = startHour; h < endHour; h++) {
+          const timeString = `${h.toString().padStart(2, '0')}:00`;
+          const isPast = isToday && h <= currentHour;
+          times.push({ label: displayTime(timeString), value: timeString, isPast: isPast });
+        }
+        return times;
+      };
+
+      const isTimeFullyBooked = (timeValue) => {
+        let blockedCount = 0;
+        [1, 2, 3, 4].forEach(c => {
+          if (isCourtBlockedByOpenPlay(bookingData.date, timeValue, c.toString())) {
+            blockedCount++;
+          }
+        });
+
+        const bookedCourtsForTime = [];
+        bookings.forEach(b => {
+          if (b.date === bookingData.date && b.times.includes(timeValue)) {
+            b.court.forEach(c => bookedCourtsForTime.push(c));
+          }
+        });
+
+        return new Set(bookedCourtsForTime).size + blockedCount >= 4;
+      };
+
+      const isCourtAvailable = (courtIndex) => {
+        const courtStr = courtIndex.toString();
+        // 檢查是否被暢打保留
+        for (const t of bookingData.times) {
+          if (isCourtBlockedByOpenPlay(bookingData.date, t, courtStr)) return false;
+        }
+        // 檢查是否被他人預約
+        return !bookings.some(b => b.date === bookingData.date && b.court.includes(courtStr) && b.times.some(t => bookingData.times.includes(t)));
+      };
+
+      const toggleTime = (timeValue) => {
+        const updatedTimes = bookingData.times.includes(timeValue) ? bookingData.times.filter(t => t !== timeValue) : [...bookingData.times, timeValue];
+        updatedTimes.sort((a, b) => parseInt(a) - parseInt(b));
+        setBookingData({ ...bookingData, times: updatedTimes, court: [] });
+      };
+
+      const toggleCourt = (courtIndex) => {
+        const courtStr = courtIndex.toString();
+        const updatedCourts = bookingData.court.includes(courtStr) ? bookingData.court.filter(c => c !== courtStr) : [...bookingData.court, courtStr];
+        updatedCourts.sort((a, b) => parseInt(a) - parseInt(b));
+        setBookingData({ ...bookingData, court: updatedCourts });
+      };
+
+      const handleImageUpload = async (e) => {
+        const file = e.target.files[0];
+        if (file) {
+          try {
+            const compressedBase64 = await compressImage(file);
+            setBookingData({ ...bookingData, screenshot: compressedBase64 });
+          } catch (error) {
+            alert('圖片處理失敗，請重試！');
+          }
+        }
+      };
+
+      const canProceed = () => {
+        if (step === 1) return bookingData.date !== '';
+        if (step === 2) return bookingData.times.length > 0;
+        if (step === 3) return bookingData.court.length > 0;
+        return true;
+      };
+
+      const handleRegister = (e) => {
+        e.preventDefault();
+        if (!authData.name || !authData.phone || !authData.email || !authData.password) { setAuthError('請填寫完整註冊資料'); return; }
+        if (users.some(u => u.phone === authData.phone)) { setAuthError('此手機號碼已註冊過，請直接登入'); return; }
+        if (users.some(u => u.email === authData.email)) { setAuthError('此信箱已註冊過，請直接登入'); return; }
+
+        const newUser = { id: Date.now(), ...authData, createdAt: new Date().toISOString() };
+        saveUsers([...users, newUser]);
+        setCurrentUser(newUser);
+        setAuthData({ name: '', phone: '', email: '', password: '', account: '', code: '' });
+        setAuthError('');
+        setView('dashboard');
+      };
+
+      const handleUserLogin = (e) => {
+        e.preventDefault();
+        if (!authData.phone || !authData.password) { setAuthError('請輸入手機號碼與密碼'); return; }
+        const user = users.find(u => u.phone === authData.phone && u.password === authData.password);
+        if (user) {
+          setCurrentUser(user);
+          setAuthData({ name: '', phone: '', email: '', password: '', account: '', code: '' });
+          setAuthError('');
+          setView('dashboard');
+        } else {
+          setAuthError('手機號碼或密碼錯誤');
+        }
+      };
+
+      const handleForgotPasswordRequest = (e) => {
+        e.preventDefault();
+        // 限定使用 Email 作為驗證與重置依據
+        const userExists = users.some(u => u.email === authData.account);
+        if (userExists) {
+          setForgotStep(2);
+          setAuthError('');
+          setResetMessage('✅ 密碼重置驗證碼已發送至您的 Gmail 信箱！\n(測試版請輸入任意驗證碼即可通過)');
+        } else {
+          setAuthError('找不到此 Gmail 信箱，請確認是否註冊過。');
+        }
+      };
+
+      const handleForgotPasswordReset = (e) => {
+        e.preventDefault();
+        if (!authData.code || !authData.password) { setAuthError('請輸入驗證碼與新密碼'); return; }
+        const userIndex = users.findIndex(u => u.email === authData.account);
+        if (userIndex !== -1) {
+          const updatedUsers = [...users];
+          updatedUsers[userIndex].password = authData.password;
+          saveUsers(updatedUsers);
+          setResetMessage('✅ 新密碼已重置成功，請重新登入。');
+          setTimeout(() => {
+            setView('login');
+            setForgotStep(1);
+            setResetMessage('');
+            setAuthData({ name: '', phone: '', email: '', password: '', account: '', code: '' });
+          }, 2000);
+        }
+      };
+
+      const handleLogout = () => { setCurrentUser(null); setView('login'); };
+
+      const startBooking = () => {
+        setBookingData({ date: '', times: [], court: [], name: currentUser.name, screenshot: null });
+        setStep(1);
+        setView('booking');
+      };
+
+      const handleSubmit = () => {
+        const newBooking = {
+          id: Date.now(),
+          userId: currentUser.id,
+          userPhone: currentUser.phone,
+          ...bookingData,
+          isConfirmed: false,
+          isBulk: false,
+          createdAt: new Date().toISOString()
+        };
+        saveBookings([...bookings, newBooking]);
+        alert('🎉 預約成功！已為您送出預約表單，請等候管理員確認。');
+        setView('dashboard'); // 取消 Line 跳轉，直接回首頁
+      };
+
+      const handleAdminLogin = (e) => {
+        e.preventDefault();
+        if (adminPasswordInput === adminAccounts.main) {
+          setCurrentAdmin({ role: 'main' });
+          setView('admin-panel');
+          setAdminTab('list');
+          setAdminPasswordInput('');
+          setLoginError('');
+        } else if (adminPasswordInput === adminAccounts.sub) {
+          setCurrentAdmin({ role: 'sub' });
+          setView('admin-panel');
+          setAdminTab('list');
+          setAdminPasswordInput('');
+          setLoginError('');
+        } else {
+          setLoginError('密碼錯誤，請重新輸入');
+        }
+      };
+
+      const deleteBooking = (id) => {
+        if (currentAdmin?.role !== 'main') { alert('只有主管理員可以刪除預約！'); return; }
+        if (window.confirm('確定要刪除這筆預約嗎？刪除後該時段/場地將會釋出。')) {
+          saveBookings(bookings.filter(b => b.id !== id));
+        }
+      };
+
+      const toggleConfirmStatus = (id) => {
+        const targetBooking = bookings.find(b => b.id === id);
+        if (!targetBooking) return;
+        saveBookings(bookings.map(b => b.id === id ? { ...b, isConfirmed: !targetBooking.isConfirmed } : b));
+      };
+
+      const handleBulkSubmit = () => {
+        if (currentAdmin?.role !== 'main') return;
+        setBulkConflicts([]);
+        if (!bulkData.name || !bulkData.startDate || bulkData.times.length === 0 || bulkData.courts.length === 0) {
+          alert('請填寫完整資訊（包含姓名、起始日、時段與場地）'); return;
+        }
+        const generatedDates = [];
+        let currentDate = new Date(bulkData.startDate);
+        for (let i = 0; i < bulkData.weeks; i++) {
+          generatedDates.push(getLocalDateString(currentDate));
+          currentDate.setDate(currentDate.getDate() + 7);
+        }
+        const conflicts = [];
+        generatedDates.forEach(date => {
+          bulkData.times.forEach(time => {
+            bulkData.courts.forEach(court => {
+              if (bookings.some(b => b.date === date && b.court.includes(court) && b.times.includes(time))) {
+                conflicts.push(`${date} (${displayTime(time)}) 第${court}場地`);
+              }
+              if (isCourtBlockedByOpenPlay(date, time, court)) {
+                conflicts.push(`${date} (${displayTime(time)}) 第${court}場地 (暢打保留)`);
+              }
+            });
+          });
+        });
+        if (conflicts.length > 0) { setBulkConflicts(conflicts); return; }
+
+        const newBookings = generatedDates.map((date, index) => ({
+          id: Date.now() + index, userId: 'admin', userPhone: '內部建立', date: date,
+          times: [...bulkData.times].sort((a, b) => parseInt(a) - parseInt(b)),
+          court: [...bulkData.courts].sort((a, b) => parseInt(a) - parseInt(b)),
+          name: bulkData.name, screenshot: null, isConfirmed: true, isBulk: true,
+          createdAt: new Date().toISOString()
+        }));
+
+        saveBookings([...bookings, ...newBookings]);
+        alert(`成功建立 ${bulkData.weeks} 筆預約！`);
+        setShowBulkModal(false);
+        setBulkData({ name: '', startDate: '', weeks: 4, times: [], courts: [] });
+      };
+
+      const getDaysInMonth = (year, month) => new Date(year, month + 1, 0).getDate();
+      const getFirstDayOfMonth = (year, month) => new Date(year, month, 1).getDay();
+      const prevMonth = () => setCalendarDate(new Date(calendarDate.getFullYear(), calendarDate.getMonth() - 1, 1));
+      const nextMonth = () => setCalendarDate(new Date(calendarDate.getFullYear(), calendarDate.getMonth() + 1, 1));
+
+      if (view === 'login') {
+        return (
+          <div className="min-h-screen flex items-center justify-center p-4 relative">
+            {isFetchingData && (
+              <div className="absolute top-4 left-4 right-4 sm:left-auto bg-yellow-500 text-blue-950 px-4 py-2 rounded-full text-sm font-bold shadow-lg animate-pulse z-50 flex items-center justify-center">
+                <i className="fas fa-spinner fa-spin mr-2 text-[16px]"></i> 正在同步雲端資料...
+              </div>
+            )}
+            <button onClick={() => setView('admin-login')} className="absolute top-4 right-4 text-xs font-medium px-4 py-2 rounded-full border border-blue-700 bg-blue-900/50 text-blue-300 hover:text-white hover:bg-blue-800 transition-colors shadow-lg">管理員後台</button>
+            <div className="bg-blue-950 p-8 rounded-3xl border border-blue-800 w-full max-w-sm shadow-2xl relative overflow-hidden">
+              <div className="absolute top-0 left-0 w-full h-2 bg-yellow-500"></div>
+              <div className="text-center mb-8 mt-2">
+                <h1 className="text-2xl font-extrabold text-yellow-400 tracking-wide mb-1">冠軍羽球館</h1>
+                <p className="text-blue-300 text-sm">會員預約登入系統</p>
+              </div>
+
+              <form onSubmit={handleUserLogin} className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-blue-200 mb-1.5 flex items-center"><i className="fas fa-phone mr-1 text-[16px]"></i> 手機號碼</label>
+                  <input type="tel" required placeholder="09xxxxxxxx" value={authData.phone} onChange={e => { setAuthData({...authData, phone: e.target.value}); setAuthError(''); }} className="w-full bg-blue-900 border border-blue-700 rounded-xl p-3.5 text-white focus:outline-none focus:border-yellow-400 transition-all placeholder-blue-500" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-blue-200 mb-1.5 flex items-center"><i className="fas fa-lock mr-1 text-[16px]"></i> 密碼</label>
+                  <input type="password" required placeholder="請輸入密碼" value={authData.password} onChange={e => { setAuthData({...authData, password: e.target.value}); setAuthError(''); }} className="w-full bg-blue-900 border border-blue-700 rounded-xl p-3.5 text-white focus:outline-none focus:border-yellow-400 transition-all placeholder-blue-500" />
+                </div>
+                {authError && <p className="text-red-400 text-sm text-center font-medium animate-pulse">{authError}</p>}
+
+                <button type="submit" className="w-full py-4 bg-yellow-500 text-blue-950 font-bold rounded-xl hover:bg-yellow-400 transition-all shadow-lg mt-2">登入系統</button>
+              </form>
+
+              <div className="mt-4 flex justify-between items-center px-1">
+                <button onClick={() => { setView('forgot-password'); setForgotStep(1); setAuthError(''); setResetMessage(''); setAuthData({name:'', phone:'', email:'', password:'', account:'', code:''}); }} className="text-blue-400 text-sm hover:text-white transition-colors">忘記密碼？</button>
+                <button onClick={() => { setView('register'); setAuthError(''); setAuthData({name:'', phone:'', email:'', password:'', account:'', code:''}); }} className="text-yellow-400 text-sm font-bold hover:text-yellow-300 transition-colors flex items-center">
+                  <i className="fas fa-user-plus mr-1 text-[14px]"></i> 立即註冊
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      if (view === 'register') {
+        return (
+          <div className="min-h-screen flex items-center justify-center p-4">
+            <div className="bg-blue-950 p-8 rounded-3xl border border-blue-800 w-full max-w-sm shadow-2xl relative overflow-hidden">
+              <div className="absolute top-0 left-0 w-full h-2 bg-yellow-500"></div>
+              <div className="text-center mb-6 mt-2">
+                <h1 className="text-2xl font-extrabold text-white mb-1 flex justify-center items-center"><i className="fas fa-user-plus mr-2 text-yellow-400 text-[24px]"></i> 註冊新會員</h1>
+                <p className="text-blue-300 text-sm">歡迎加入冠軍羽球館</p>
+              </div>
+
+              <form onSubmit={handleRegister} className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-blue-200 mb-1.5 flex items-center"><i className="fas fa-user mr-1 text-[16px]"></i> 真實姓名</label>
+                  <input type="text" required placeholder="請輸入姓名" value={authData.name} onChange={e => { setAuthData({...authData, name: e.target.value}); setAuthError(''); }} className="w-full bg-blue-900 border border-blue-700 rounded-xl p-3.5 text-white focus:outline-none focus:border-yellow-400 transition-all" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-blue-200 mb-1.5 flex items-center"><i className="fas fa-phone mr-1 text-[16px]"></i> 手機號碼 (登入帳號)</label>
+                  <input type="tel" required placeholder="09xxxxxxxx" value={authData.phone} onChange={e => { setAuthData({...authData, phone: e.target.value}); setAuthError(''); }} className="w-full bg-blue-900 border border-blue-700 rounded-xl p-3.5 text-white focus:outline-none focus:border-yellow-400 transition-all" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-blue-200 mb-1.5 flex items-center"><i className="fab fa-google mr-1 text-[16px]"></i> Gmail 信箱 (忘記密碼用)</label>
+                  <input type="email" required placeholder="example@gmail.com" value={authData.email} onChange={e => { setAuthData({...authData, email: e.target.value}); setAuthError(''); }} className="w-full bg-blue-900 border border-blue-700 rounded-xl p-3.5 text-white focus:outline-none focus:border-yellow-400 transition-all" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-blue-200 mb-1.5 flex items-center"><i className="fas fa-lock mr-1 text-[16px]"></i> 設定密碼</label>
+                  <input type="password" required placeholder="請設定登入密碼" value={authData.password} onChange={e => { setAuthData({...authData, password: e.target.value}); setAuthError(''); }} className="w-full bg-blue-900 border border-blue-700 rounded-xl p-3.5 text-white focus:outline-none focus:border-yellow-400 transition-all" />
+                </div>
+                {authError && <p className="text-red-400 text-sm text-center font-medium animate-pulse">{authError}</p>}
+
+                <button type="submit" className="w-full py-4 bg-yellow-500 text-blue-950 font-bold rounded-xl hover:bg-yellow-400 transition-all shadow-lg mt-2">完成註冊並登入</button>
+              </form>
+
+              <div className="mt-4 text-center">
+                <button onClick={() => { setView('login'); setAuthError(''); setAuthData({name:'', phone:'', email:'', password:'', account:'', code:''}); }} className="py-2 text-blue-300 text-sm hover:text-white transition-colors">已有帳號？返回登入</button>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      if (view === 'forgot-password') {
+        return (
+          <div className="min-h-screen flex items-center justify-center p-4">
+            <div className="bg-blue-950 p-8 rounded-3xl border border-blue-800 w-full max-w-sm shadow-2xl relative overflow-hidden">
+              <div className="absolute top-0 left-0 w-full h-2 bg-yellow-500"></div>
+              <div className="text-center mb-6 mt-2">
+                <h1 className="text-2xl font-extrabold text-white mb-1 flex justify-center items-center"><i className="fas fa-key mr-2 text-yellow-400 text-[24px]"></i> 忘記密碼</h1>
+                <p className="text-blue-300 text-sm">
+                  {forgotStep === 1 ? '請輸入註冊時的 Gmail 收取驗證碼' : '請輸入驗證碼並設定新密碼'}
+                </p>
+              </div>
+
+              {forgotStep === 1 ? (
+                <form onSubmit={handleForgotPasswordRequest} className="space-y-4">
+                  <div>
+                    <label className="block text-sm font-medium text-blue-200 mb-1.5 flex items-center"><i className="fab fa-google mr-1 text-[16px]"></i> Gmail 信箱</label>
+                    <input type="email" required placeholder="請輸入您的 Gmail" value={authData.account} onChange={e => { setAuthData({...authData, account: e.target.value}); setAuthError(''); }} className="w-full bg-blue-900 border border-blue-700 rounded-xl p-3.5 text-white focus:outline-none focus:border-yellow-400 transition-all" />
+                  </div>
+
+                  {authError && <p className="text-red-400 text-sm text-center font-medium animate-pulse">{authError}</p>}
+                  {resetMessage && <p className="text-green-400 text-sm text-center font-bold bg-green-900/30 p-2 rounded-lg whitespace-pre-line">{resetMessage}</p>}
+
+                  <button type="submit" className="w-full py-4 bg-yellow-500 text-blue-950 font-bold rounded-xl hover:bg-yellow-400 transition-all shadow-lg mt-2">發送驗證碼至信箱</button>
+                </form>
+              ) : (
+                <form onSubmit={handleForgotPasswordReset} className="space-y-4">
+                  {resetMessage && !resetMessage.includes('登入') && <p className="text-green-400 text-sm text-center font-bold bg-green-900/30 p-2 rounded-lg whitespace-pre-line">{resetMessage}</p>}
+                  <div>
+                    <label className="block text-sm font-medium text-blue-200 mb-1.5 flex items-center"><i className="fas fa-shield-alt mr-1 text-[16px]"></i> 信箱驗證碼</label>
+                    <input type="text" required placeholder="請輸入收到的驗證碼" value={authData.code} onChange={e => { setAuthData({...authData, code: e.target.value}); setAuthError(''); }} className="w-full bg-blue-900 border border-blue-700 rounded-xl p-3.5 text-white focus:outline-none focus:border-yellow-400 transition-all tracking-widest" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-blue-200 mb-1.5 flex items-center"><i className="fas fa-lock mr-1 text-[16px]"></i> 設定新密碼</label>
+                    <input type="password" required placeholder="請設定新的登入密碼" value={authData.password} onChange={e => { setAuthData({...authData, password: e.target.value}); setAuthError(''); }} className="w-full bg-blue-900 border border-blue-700 rounded-xl p-3.5 text-white focus:outline-none focus:border-yellow-400 transition-all" />
+                  </div>
+                  {authError && <p className="text-red-400 text-sm text-center font-medium animate-pulse">{authError}</p>}
+                  {resetMessage.includes('登入') && <p className="text-green-400 text-sm text-center font-medium">{resetMessage}</p>}
+
+                  <button type="submit" className="w-full py-4 bg-yellow-500 text-blue-950 font-bold rounded-xl hover:bg-yellow-400 transition-all shadow-lg mt-2">確認重置密碼</button>
+                </form>
+              )}
+
+              <div className="mt-4 text-center">
+                <button onClick={() => { setView('login'); setForgotStep(1); setAuthError(''); setResetMessage(''); setAuthData({name:'', phone:'', email:'', password:'', account:'', code:''}); }} className="py-2 text-blue-300 text-sm hover:text-white transition-colors">返回登入</button>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      if (view === 'dashboard') {
+        const myBookings = bookings.filter(b => b.userId === currentUser.id).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+        return (
+          <div className="min-h-screen">
+            <header className="flex justify-between items-center p-4 sm:px-6 bg-blue-950/80 backdrop-blur-md sticky top-0 z-10 border-b border-blue-800">
+              <h1 className="text-xl font-bold text-yellow-400 flex items-center tracking-wide">
+                冠軍羽球館 <span className="text-sm font-normal text-blue-200 ml-2 hidden sm:inline">（國光店）</span>
+              </h1>
+              <button onClick={handleLogout} className="flex items-center text-xs font-medium px-3 py-1.5 rounded-full border border-blue-700 text-blue-300 hover:text-white hover:bg-red-500/80 hover:border-red-500 transition-colors">
+                <i className="fas fa-sign-out-alt mr-1 text-[14px]"></i> 登出
+              </button>
+            </header>
+
+            <main className="max-w-2xl mx-auto p-4 sm:p-6 pb-24">
+              <div className="bg-gradient-to-r from-blue-800 to-blue-950 rounded-3xl p-6 sm:p-8 shadow-2xl border border-blue-700 relative overflow-hidden mb-8">
+                <div className="absolute top-0 right-0 p-4 opacity-10"><i className="fas fa-user text-white text-[100px]"></i></div>
+                <h2 className="text-3xl font-extrabold text-white mb-2 relative z-10">哈囉, {currentUser.name} 👋</h2>
+                <p className="text-blue-200 text-sm relative z-10">歡迎來到您的專屬會員中心，您可以在此查看歷史紀錄或發起新預約。</p>
+                <div className="mt-6 flex justify-start relative z-10">
+                  <button onClick={startBooking} className="flex items-center px-6 py-3 bg-yellow-500 text-blue-950 font-bold rounded-xl text-lg hover:bg-yellow-400 transition-all shadow-lg">
+                    <i className="fas fa-calendar-day mr-2 text-[20px]"></i> 馬上預約場地
+                  </button>
+                </div>
+              </div>
+
+              <div className="mb-4 flex items-center justify-between">
+                <h3 className="text-xl font-bold text-yellow-400 flex items-center"><i className="fas fa-history mr-2"></i> 我的預約紀錄</h3>
+                <span className="bg-blue-800 text-blue-200 text-xs px-2 py-1 rounded-full font-bold">共 {myBookings.length} 筆</span>
+              </div>
+
+              <div className="space-y-4">
+                {myBookings.length === 0 ? (
+                  <div className="bg-blue-950/60 border border-blue-800 rounded-2xl p-8 text-center backdrop-blur-sm">
+                    <i className="fas fa-calendar-day mx-auto text-blue-700 mb-4 text-[48px] block text-center"></i>
+                    <p className="text-blue-300 font-medium">您目前還沒有任何預約紀錄喔！</p>
+                  </div>
+                ) : (
+                  myBookings.map(b => (
+                    <div key={b.id} className="bg-blue-950 border border-blue-700 rounded-2xl p-5 shadow-lg relative overflow-hidden">
+                      <div className={`absolute top-0 right-0 px-3 py-1 text-xs font-bold rounded-bl-xl ${b.isConfirmed ? 'bg-green-500 text-white' : 'bg-yellow-500 text-blue-950'}`}>
+                        {b.isConfirmed ? '已確認成功' : '等待店家確認'}
+                      </div>
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mt-2">
+                        <div>
+                          <h4 className="text-white font-bold text-lg mb-1">{b.date} <span className="text-blue-400 text-sm font-normal ml-2">第 {Array.isArray(b.court) ? b.court.join(', ') : b.court} 場地</span></h4>
+                          <div className="flex flex-wrap gap-2 mt-2">
+                            {b.times.map(t => <span key={t} className="bg-blue-900 border border-blue-600 text-blue-200 px-2 py-1 rounded text-xs">{displayTime(t)}</span>)}
+                          </div>
+                        </div>
+                        <div className="text-left sm:text-right">
+                          <p className="text-blue-400 text-xs mb-1">訂單建立時間</p>
+                          <p className="text-blue-200 text-sm">{new Date(b.createdAt).toLocaleString('zh-TW', { hour12: false })}</p>
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </main>
+          </div>
+        );
+      }
+
+      if (view === 'admin-login') {
+        return (
+          <div className="min-h-screen flex items-center justify-center p-4">
+            <div className="bg-blue-950 p-8 rounded-2xl border border-blue-800 w-full max-w-sm shadow-2xl relative overflow-hidden">
+              <div className="absolute top-0 left-0 w-full h-2 bg-red-500"></div>
+              <h2 className="text-2xl font-bold text-center text-red-400 mb-6 flex justify-center items-center">
+                <i className="fas fa-user-shield mr-2 text-[24px]"></i> 管理員登入
+              </h2>
+              <form onSubmit={handleAdminLogin} className="space-y-5">
+                <div>
+                  <input type="password" placeholder="請輸入管理員密碼" value={adminPasswordInput} onChange={e => { setAdminPasswordInput(e.target.value); setLoginError(''); }} className="w-full bg-blue-900 border border-red-900/50 rounded-xl p-4 text-white focus:outline-none focus:border-red-400 focus:ring-1 focus:ring-red-400 transition-all text-center placeholder-blue-400 tracking-widest" />
+                  {loginError && <p className="text-red-400 text-sm mt-2 text-center font-medium animate-pulse">{loginError}</p>}
+                </div>
+                <button type="submit" className="w-full py-4 bg-red-500 text-white font-bold rounded-xl hover:bg-red-400 transition-colors shadow-lg shadow-red-500/20">登入後台</button>
+                <div className="flex justify-between items-center mt-2 px-1">
+                  <button type="button" onClick={() => {
+                    if (window.confirm('是否要將主管理員密碼重置回系統預設值 (lu2588666)？')) {
+                      saveAdminAccounts({ ...adminAccounts, main: 'lu2588666' });
+                      alert('主管理員密碼已重置為 lu2588666，請重新登入！');
+                    }
+                  }} className="text-blue-400 text-sm hover:text-white transition-colors">忘記密碼？</button>
+                  <button type="button" onClick={() => { setView('login'); setAdminPasswordInput(''); setLoginError(''); }} className="text-blue-300 text-sm hover:text-white transition-colors">返回會員首頁</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        );
+      }
+
+      if (view === 'admin-panel') {
+        let sortedBookings = [...bookings].sort((a, b) => new Date(a.date) - new Date(b.date));
+
+        if (listFilter === 'pending') {
+          sortedBookings = sortedBookings.filter(b => !b.isConfirmed);
+        } else if (listFilter === 'regular') {
+          sortedBookings = sortedBookings.filter(b => !b.isBulk);
+        } else if (listFilter === 'bulk') {
+          sortedBookings = sortedBookings.filter(b => b.isBulk);
+        }
+
+        const pendingCount = bookings.filter(b => !b.isConfirmed).length;
+
+        const year = calendarDate.getFullYear();
+        const month = calendarDate.getMonth();
+        const daysInMonth = getDaysInMonth(year, month);
+        const firstDay = getFirstDayOfMonth(year, month);
+        const calendarDays = [];
+        for (let i = 0; i < firstDay; i++) calendarDays.push(null);
+        for (let i = 1; i <= daysInMonth; i++) {
+          const dStr = getLocalDateString(new Date(year, month, i));
+          const count = bookings.filter(b => b.date === dStr).length;
+          calendarDays.push({ day: i, dateStr: dStr, count });
+        }
+
+        const filteredUsers = users.filter(u =>
+          u.name.toLowerCase().includes(userSearchTerm.toLowerCase()) ||
+          u.phone.includes(userSearchTerm)
+        );
+
+        return (
+          <div className="min-h-screen bg-blue-900 p-4 sm:p-6 font-sans">
+            <div className="max-w-7xl mx-auto">
+              <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center mb-6 gap-4 bg-blue-950 p-4 rounded-xl border border-blue-800 shadow-lg">
+                <div>
+                  <h2 className="text-2xl font-bold text-yellow-400 flex items-center">
+                    <i className="fas fa-user-shield mr-2 text-[22px]"></i> 預約管理系統
+                    <span className="text-sm font-normal text-blue-300 ml-3 bg-blue-900 px-2 py-1 rounded border border-blue-700">
+                      身分：{currentAdmin?.role === 'main' ? '主管理員' : '副管理員'}
+                    </span>
+                  </h2>
+                </div>
+
+                <div className="flex flex-wrap gap-3 w-full lg:w-auto">
+                  <div className="flex bg-blue-900 rounded-lg p-1 border border-blue-700 w-full sm:w-auto overflow-x-auto">
+                    <button onClick={() => setAdminTab('list')} className={`flex-1 sm:flex-none flex items-center justify-center px-4 py-2 rounded-md text-sm font-bold transition-all whitespace-nowrap ${adminTab === 'list' ? 'bg-yellow-500 text-blue-950 shadow' : 'text-blue-300 hover:text-white'}`}>
+                      <i className="fas fa-list text-[16px] mr-2"></i> 預約列表
+                    </button>
+                    <button onClick={() => setAdminTab('calendar')} className={`flex-1 sm:flex-none flex items-center justify-center px-4 py-2 rounded-md text-sm font-bold transition-all whitespace-nowrap ${adminTab === 'calendar' ? 'bg-yellow-500 text-blue-950 shadow' : 'text-blue-300 hover:text-white'}`}>
+                      <i className="fas fa-calendar-day text-[16px] mr-2"></i> 檔期表
+                    </button>
+                    <button onClick={() => setAdminTab('users')} className={`flex-1 sm:flex-none flex items-center justify-center px-4 py-2 rounded-md text-sm font-bold transition-all whitespace-nowrap ${adminTab === 'users' ? 'bg-yellow-500 text-blue-950 shadow' : 'text-blue-300 hover:text-white'}`}>
+                      <i className="fas fa-users text-[16px] mr-2"></i> 會員名單
+                    </button>
+                    {currentAdmin?.role === 'main' && (
+                      <button onClick={() => setAdminTab('openplay')} className={`flex-1 sm:flex-none flex items-center justify-center px-4 py-2 rounded-md text-sm font-bold transition-all whitespace-nowrap ${adminTab === 'openplay' ? 'bg-yellow-500 text-blue-950 shadow' : 'text-blue-300 hover:text-white'}`}>
+                        <BadmintonIcon className="text-[16px] mr-2" /> 暢打管理
+                      </button>
+                    )}
+                    {currentAdmin?.role === 'main' && (
+                      <button onClick={() => setAdminTab('settings')} className={`flex-1 sm:flex-none flex items-center justify-center px-4 py-2 rounded-md text-sm font-bold transition-all whitespace-nowrap ${adminTab === 'settings' ? 'bg-yellow-500 text-blue-950 shadow' : 'text-blue-300 hover:text-white'}`}>
+                        <i className="fas fa-cog text-[16px] mr-2"></i> 權限設定
+                      </button>
+                    )}
+                  </div>
+
+                  {currentAdmin?.role === 'main' && adminTab !== 'settings' && adminTab !== 'openplay' && adminTab !== 'users' && (
+                    <button onClick={() => setShowBulkModal(true)} className="flex-1 sm:flex-none flex items-center justify-center px-4 py-2.5 bg-yellow-500 text-blue-950 font-bold rounded-lg hover:bg-yellow-400 transition-colors shadow-lg">
+                      <i className="fas fa-plus-circle text-[18px] mr-1"></i> 週期預約
+                    </button>
+                  )}
+                  <button onClick={() => { setView('login'); setListFilter('all'); setCurrentAdmin(null); }} className="flex items-center justify-center px-4 py-2.5 bg-blue-800 text-blue-100 rounded-lg hover:bg-blue-700 hover:text-white transition-colors border border-blue-700">
+                    <i className="fas fa-sign-out-alt text-[18px] mr-1"></i> 退出
+                  </button>
+                </div>
+              </div>
+
+              {/* 後台 - 預約列表 */}
+              {adminTab === 'list' && (
+                <div className="bg-blue-950 rounded-2xl border border-blue-800 overflow-hidden shadow-2xl">
+                  <div className="bg-blue-900/50 p-4 border-b border-blue-800 flex gap-2 overflow-x-auto custom-scrollbar">
+                    <button onClick={() => setListFilter('all')} className={`px-4 py-1.5 rounded-full text-sm font-bold whitespace-nowrap transition-colors ${listFilter === 'all' ? 'bg-yellow-500 text-blue-950' : 'bg-blue-900 border border-blue-700 text-blue-300 hover:text-white'}`}>全部預約</button>
+                    <button onClick={() => setListFilter('pending')} className={`px-4 py-1.5 rounded-full text-sm font-bold whitespace-nowrap transition-colors flex items-center ${listFilter === 'pending' ? 'bg-yellow-500 text-blue-950' : 'bg-blue-900 border border-blue-700 text-blue-300 hover:text-white'}`}>
+                      待確認
+                      {pendingCount > 0 && <span className={`ml-1.5 px-1.5 py-0.5 rounded-full text-[10px] ${listFilter === 'pending' ? 'bg-red-500 text-white' : 'bg-red-500 text-white'}`}>{pendingCount}</span>}
+                    </button>
+                    <button onClick={() => setListFilter('regular')} className={`px-4 py-1.5 rounded-full text-sm font-bold whitespace-nowrap transition-colors ${listFilter === 'regular' ? 'bg-yellow-500 text-blue-950' : 'bg-blue-900 border border-blue-700 text-blue-300 hover:text-white'}`}>臨打預約</button>
+                    <button onClick={() => setListFilter('bulk')} className={`px-4 py-1.5 rounded-full text-sm font-bold whitespace-nowrap transition-colors ${listFilter === 'bulk' ? 'bg-yellow-500 text-blue-950' : 'bg-blue-900 border border-blue-700 text-blue-300 hover:text-white'}`}>週期預約</button>
+                  </div>
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm text-blue-100 min-w-[1100px]">
+                      <thead className="bg-blue-900 text-yellow-500 font-semibold border-b-2 border-blue-800">
+                        <tr>
+                          <th className="p-4 whitespace-nowrap w-24">狀態</th>
+                          <th className="p-4 whitespace-nowrap">類型</th>
+                          <th className="p-4 whitespace-nowrap">日期</th>
+                          <th className="p-4">預約時段</th>
+                          <th className="p-4 whitespace-nowrap">預約場地</th>
+                          <th className="p-4 whitespace-nowrap">預約人姓名</th>
+                          <th className="p-4 whitespace-nowrap">會員電話</th>
+                          <th className="p-4 text-center whitespace-nowrap w-32">轉帳截圖</th>
+                          {currentAdmin?.role === 'main' && <th className="p-4 text-center whitespace-nowrap w-20">操作</th>}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-blue-800/50">
+                        {sortedBookings.length === 0 ? (
+                          <tr><td colSpan="9" className="p-12 text-center text-blue-400 text-lg">此分類下目前尚無紀錄</td></tr>
+                        ) : (
+                          sortedBookings.map(b => (
+                            <tr key={b.id} className={`transition-colors ${b.isConfirmed ? 'bg-green-900/10 hover:bg-green-900/20' : 'hover:bg-blue-900/40'}`}>
+                              <td className="p-4">
+                                <label className="flex items-center cursor-pointer group">
+                                  <input type="checkbox" checked={b.isConfirmed} onChange={() => toggleConfirmStatus(b.id)} className="hidden" />
+                                  <div className={`w-6 h-6 rounded flex items-center justify-center border-2 transition-all mr-2 ${b.isConfirmed ? 'bg-green-500 border-green-500' : 'bg-blue-900 border-blue-600 group-hover:border-yellow-400'}`}>
+                                    {b.isConfirmed && <i className="fas fa-check text-white text-[16px]"></i>}
+                                  </div>
+                                  <span className={`text-xs font-bold ${b.isConfirmed ? 'text-green-400' : 'text-yellow-400 animate-pulse'}`}>{b.isConfirmed ? '已完成' : '待確認'}</span>
+                                </label>
+                              </td>
+                              <td className="p-4">
+                                <span className={`px-2 py-1 text-[10px] font-bold rounded ${b.isBulk ? 'bg-purple-900 text-purple-300 border border-purple-700' : 'bg-blue-800 text-blue-300 border border-blue-700'}`}>
+                                  {b.isBulk ? '週期' : '臨打'}
+                                </span>
+                              </td>
+                              <td className="p-4 font-medium text-white">{b.date}</td>
+                              <td className="p-4">
+                                <div className="flex flex-wrap gap-2">
+                                  {b.times.map(t => <span key={t} className="bg-blue-800 border border-blue-700 text-yellow-300 px-2 py-1 rounded shadow-sm text-xs whitespace-nowrap">{displayTime(t)}</span>)}
+                                </div>
+                              </td>
+                              <td className="p-4 text-blue-200">第 <span className="text-white font-bold">{Array.isArray(b.court) ? b.court.join(', ') : b.court}</span> 場地</td>
+                              <td className="p-4 font-medium">{b.name}</td>
+                              <td className="p-4 font-mono text-blue-300">{b.userPhone || '無'}</td>
+                              <td className="p-4 text-center">
+                                {b.screenshot ? (
+                                  <div className="w-16 h-16 mx-auto rounded overflow-hidden border-2 border-blue-700 hover:border-yellow-400 cursor-pointer transition-colors relative group bg-blue-900 flex items-center justify-center" onClick={() => setViewImage(b.screenshot)} title="點擊放大查看">
+                                    <img src={b.screenshot} alt="截圖" className="w-full h-full object-cover" />
+                                    <div className="absolute inset-0 bg-blue-950/60 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity"><i className="fas fa-image text-yellow-400 text-[20px]"></i></div>
+                                  </div>
+                                ) : <span className="text-blue-600 text-xs bg-blue-900/50 px-2 py-1 rounded">無 (已清除/後台)</span>}
+                              </td>
+                              {currentAdmin?.role === 'main' && (
+                                <td className="p-4 text-center">
+                                  <button onClick={() => deleteBooking(b.id)} className="p-2 text-red-400 hover:bg-red-500 hover:text-white rounded-lg transition-all inline-flex items-center shadow-sm" title="刪除"><i className="fas fa-trash-alt text-[18px]"></i></button>
+                                </td>
+                              )}
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* 後台 - 檔期表 */}
+              {adminTab === 'calendar' && (
+                <div className="flex flex-col xl:flex-row gap-6 animate-in fade-in">
+                  <div className="w-full xl:w-1/3 bg-blue-950 rounded-2xl border border-blue-800 p-5 shadow-2xl h-fit">
+                    <div className="flex justify-between items-center mb-6">
+                      <button onClick={prevMonth} className="p-2 bg-blue-900 hover:bg-yellow-500 hover:text-blue-950 text-blue-300 rounded-lg transition-colors"><i className="fas fa-chevron-left text-[20px]"></i></button>
+                      <h3 className="text-lg font-bold text-white">{year} 年 {month + 1} 月</h3>
+                      <button onClick={nextMonth} className="p-2 bg-blue-900 hover:bg-yellow-500 hover:text-blue-950 text-blue-300 rounded-lg transition-colors"><i className="fas fa-chevron-right text-[20px]"></i></button>
+                    </div>
+
+                    <div className="grid grid-cols-7 gap-2 mb-2 text-center text-xs font-bold text-blue-400">
+                      <div>日</div><div>一</div><div>二</div><div>三</div><div>四</div><div>五</div><div>六</div>
+                    </div>
+                    <div className="grid grid-cols-7 gap-2">
+                      {calendarDays.map((item, idx) => {
+                        if (!item) return <div key={`empty-${idx}`} className="p-2"></div>;
+                        const isSelected = selectedGridDate === item.dateStr;
+                        const isToday = item.dateStr === todayString;
+                        return (
+                          <button
+                            key={item.dateStr} onClick={() => setSelectedGridDate(item.dateStr)}
+                            className={`relative aspect-square flex flex-col items-center justify-center rounded-xl border-2 transition-all p-1
+                              ${isSelected ? 'bg-yellow-500 border-yellow-400 text-blue-950 shadow-md scale-105 z-10' : 'bg-blue-900/50 border-blue-800/50 text-white hover:border-yellow-500 hover:bg-blue-800'}`}
+                          >
+                            <span className={`text-sm font-bold ${isToday && !isSelected ? 'text-yellow-400' : ''}`}>{item.day}</span>
+                            {item.count > 0 && <span className={`text-[10px] mt-1 px-1.5 rounded-full font-bold ${isSelected ? 'bg-blue-900 text-yellow-400' : 'bg-yellow-500 text-blue-950'}`}>{item.count} 筆</span>}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="w-full xl:w-2/3 bg-blue-950 rounded-2xl border border-blue-800 shadow-2xl overflow-hidden flex flex-col">
+                    <div className="p-5 border-b border-blue-800 bg-blue-900/40 flex justify-between items-center">
+                      <h3 className="text-xl font-bold text-yellow-400 flex items-center">
+                        <i className="fas fa-calendar-day mr-2 text-[16px]"></i> {selectedGridDate} 檔期表
+                      </h3>
+                      <div className="flex gap-4 text-xs font-medium flex-wrap justify-end">
+                        <span className="flex items-center text-blue-200"><div className="w-3 h-3 bg-blue-900 border border-blue-700 rounded mr-1"></div> 空閒</span>
+                        <span className="flex items-center text-purple-300"><div className="w-3 h-3 bg-purple-900 border border-purple-500 rounded mr-1"></div> 暢打</span>
+                        <span className="flex items-center text-yellow-400"><div className="w-3 h-3 bg-yellow-900/50 border border-yellow-600 rounded mr-1"></div> 待確認</span>
+                        <span className="flex items-center text-green-400"><div className="w-3 h-3 bg-green-900/50 border border-green-500 rounded mr-1"></div> 已確認</span>
+                      </div>
+                    </div>
+
+                    <div className="overflow-x-auto overflow-y-auto max-h-[700px] custom-scrollbar relative">
+                      <table className="w-full text-center border-collapse min-w-[600px]">
+                        <thead className="bg-blue-900 sticky top-0 z-10 shadow-md">
+                          <tr>
+                            <th className="p-3 text-blue-300 font-bold border-b-2 border-blue-700 w-24 bg-blue-900">時間</th>
+                            {[1, 2, 3, 4].map(c => (
+                              <th key={c} className="p-3 text-yellow-500 font-bold border-b-2 border-blue-700 bg-blue-900">第 {c} 場地</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {allTimeSlots.map(time => {
+                            return (
+                              <tr key={time} className="hover:bg-blue-900/30 transition-colors border-b border-blue-800/50">
+                                <td className="p-3 font-medium text-blue-200 bg-blue-900/20 whitespace-nowrap text-sm border-r border-blue-800/50">{displayTime(time)}</td>
+                                {[1, 2, 3, 4].map(court => {
+                                  const courtStr = court.toString();
+
+                                  const isBlocked = isCourtBlockedByOpenPlay(selectedGridDate, time, courtStr);
+                                  const booking = bookings.find(b => {
+                                    const courtArray = Array.isArray(b.court) ? b.court : [b.court];
+                                    return b.date === selectedGridDate && b.times.includes(time) && courtArray.includes(courtStr);
+                                  });
+
+                                  return (
+                                    <td key={`${time}-${court}`} className="p-2 border-r border-blue-800/50 last:border-0 relative h-16">
+                                      {isBlocked ? (
+                                        <div className="w-full h-full flex flex-col justify-center items-center rounded-lg border bg-purple-900/40 border-purple-500/50 text-purple-300 shadow-sm p-1">
+                                          <BadmintonIcon className="text-[16px] mb-1 opacity-80" />
+                                          <span className="font-bold text-xs">暢打保留</span>
+                                        </div>
+                                      ) : booking ? (
+                                        <div className={`w-full h-full flex flex-col justify-center items-center rounded-lg border shadow-sm p-1 ${booking.isConfirmed ? 'bg-green-900/30 border-green-500/50 text-green-300' : 'bg-yellow-900/30 border-yellow-600/50 text-yellow-400'}`}>
+                                          <span className="font-bold text-sm truncate max-w-[100px]" title={booking.name}>{booking.name}</span>
+                                          {booking.isConfirmed ? <i className="fas fa-check mt-1 opacity-70 text-[14px]"></i> : <i className="fas fa-clock mt-1 opacity-70 text-[14px]"></i>}
+                                        </div>
+                                      ) : (
+                                        <div className="w-full h-full rounded-lg border border-transparent flex items-center justify-center"><span className="text-blue-800/50 text-xs font-bold select-none">-</span></div>
+                                      )}
+                                    </td>
+                                  );
+                                })}
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* 後台 - 會員名單 */}
+              {adminTab === 'users' && (
+                <div className="bg-blue-950 rounded-2xl border border-blue-800 overflow-hidden shadow-2xl animate-in fade-in">
+                  <div className="p-4 border-b border-blue-800 bg-blue-900/50">
+                    <div className="relative max-w-sm">
+                      <i className="fas fa-search absolute left-3 top-3 text-blue-400"></i>
+                      <input
+                        type="text"
+                        placeholder="輸入會員姓名或手機號碼搜尋..."
+                        value={userSearchTerm}
+                        onChange={(e) => setUserSearchTerm(e.target.value)}
+                        className="w-full bg-blue-950 border border-blue-700 rounded-lg pl-10 pr-4 py-2 text-white focus:border-yellow-400 focus:outline-none placeholder-blue-600"
+                      />
+                    </div>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm text-blue-100 min-w-[800px]">
+                      <thead className="bg-blue-900 text-yellow-500 font-semibold border-b-2 border-blue-800">
+                        <tr>
+                          <th className="p-4 whitespace-nowrap w-16">ID</th>
+                          <th className="p-4 whitespace-nowrap">會員姓名</th>
+                          <th className="p-4 whitespace-nowrap">手機號碼 (帳號)</th>
+                          <th className="p-4 whitespace-nowrap">電子信箱</th>
+                          <th className="p-4 whitespace-nowrap">註冊時間</th>
+                          <th className="p-4 text-center whitespace-nowrap w-32">總預約次數</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-blue-800/50">
+                        {filteredUsers.length === 0 ? (
+                          <tr><td colSpan="6" className="p-12 text-center text-blue-400 text-lg">目前找不到符合的會員</td></tr>
+                        ) : (
+                          filteredUsers.map((u, idx) => {
+                            const userBookingCount = bookings.filter(b => b.userId === u.id).length;
+                            return (
+                              <tr key={u.id} className="hover:bg-blue-900/40 transition-colors">
+                                <td className="p-4 text-blue-400 font-mono">#{idx + 1}</td>
+                                <td className="p-4 font-bold text-white flex items-center"><i className="fas fa-user mr-2 text-yellow-500 text-[16px]"></i> {u.name}</td>
+                                <td className="p-4 font-mono text-blue-200">{u.phone}</td>
+                                <td className="p-4 text-blue-300">{u.email}</td>
+                                <td className="p-4 text-blue-300">{new Date(u.createdAt).toLocaleString('zh-TW', { hour12: false })}</td>
+                                <td className="p-4 text-center">
+                                  <span className="bg-blue-800 text-yellow-400 px-3 py-1 rounded-full font-bold text-xs">
+                                    {userBookingCount} 次
+                                  </span>
+                                </td>
+                              </tr>
+                            );
+                          })
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* 後台 - 暢打與包場管理 (僅主管理員) */}
+              {adminTab === 'openplay' && currentAdmin?.role === 'main' && (
+                <div className="bg-blue-950 rounded-2xl border border-blue-800 p-6 shadow-2xl animate-in fade-in space-y-6">
+                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center border-b border-blue-800 pb-4">
+                    <div>
+                      <h3 className="text-xl font-bold text-yellow-400 flex items-center mb-1">
+                        <BadmintonIcon className="text-[22px] mr-2" /> 暢打與包場設定
+                      </h3>
+                      <p className="text-sm text-blue-300">手動調整每日保留給「暢打」的場地數量。遇到全館包場時，可一鍵取消該日暢打。</p>
+                    </div>
+                  </div>
+
+                  <div className="bg-blue-900/40 p-5 rounded-xl border border-blue-700/50">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div>
+                        <label className="block text-sm font-bold text-blue-200 mb-2">1. 選擇要調整的日期</label>
+                        <input type="date" value={opManageDate} onChange={e => {
+                            setOpManageDate(e.target.value);
+                            setEditingOpCourts(getOpenPlayCourts(e.target.value));
+                        }} className="w-full bg-blue-950 border border-blue-600 rounded-lg p-3 text-white focus:outline-none focus:border-yellow-400 cursor-pointer [color-scheme:dark]" />
+                        <div className="mt-3 bg-blue-950/80 p-3 rounded-lg border border-blue-800">
+                          <p className="text-sm text-blue-200">
+                            <span className="font-bold text-yellow-400">該日暢打時段：</span>
+                            {getOpenPlayTimes(opManageDate).map(t => displayTime(t)).join(', ')}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="flex justify-between items-end mb-3">
+                          <label className="block text-sm font-bold text-blue-200">2. 勾選當日要保留做「暢打」的場地</label>
+                          <button onClick={() => setEditingOpCourts([])} className="px-3 py-1.5 bg-red-950/80 text-red-400 border border-red-800 rounded-lg hover:bg-red-500 hover:text-white transition-colors text-xs font-bold flex items-center shadow-sm">
+                            <i className="fas fa-ban mr-1"></i> 全部取消 (包場模式)
+                          </button>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3 mb-4">
+                          {[1, 2, 3, 4].map(court => {
+                            const cStr = court.toString();
+                            const isSelected = editingOpCourts.includes(cStr);
+                            const isBookedByUser = bookings.some(b => b.date === opManageDate && b.court.includes(cStr) && b.times.some(t => getOpenPlayTimes(opManageDate).includes(t)));
+
+                            return (
+                              <label key={court} className={`relative flex flex-col items-center justify-center p-4 rounded-xl border-2 cursor-pointer transition-all ${isSelected ? 'bg-purple-900/50 border-purple-400 shadow-md' : 'bg-blue-900/50 border-blue-700 hover:border-purple-400'}`}>
+                                <input type="checkbox" checked={isSelected} className="hidden" onChange={() => {
+                                  if (isSelected) setEditingOpCourts(editingOpCourts.filter(c => c !== cStr));
+                                  else setEditingOpCourts([...editingOpCourts, cStr].sort());
+                                }} />
+                                <span className={`text-lg font-bold mb-1 ${isSelected ? 'text-purple-300' : 'text-blue-200'}`}>第 {court} 場地</span>
+                                <div className={`w-5 h-5 rounded-md border flex items-center justify-center transition-colors ${isSelected ? 'bg-purple-500 border-purple-400' : 'bg-blue-950 border-blue-600'}`}>
+                                  {isSelected && <i className="fas fa-check text-white text-xs"></i>}
+                                </div>
+                                {isBookedByUser && <span className="absolute top-1 right-1 text-[10px] bg-red-900 text-red-300 px-1.5 rounded-full border border-red-800">已被預約</span>}
+                              </label>
+                            );
+                          })}
+                        </div>
+
+                        <button onClick={() => {
+                          const newOverrides = { ...openPlayOverrides, [opManageDate]: editingOpCourts };
+                          saveOpenPlayOverrides(newOverrides);
+                          alert(`${opManageDate} 暢打保留場地設定成功！`);
+                        }} className="w-full py-3 bg-yellow-500 text-blue-950 font-bold rounded-xl hover:bg-yellow-400 transition-shadow shadow-lg flex items-center justify-center">
+                          <i className="fas fa-save mr-2 text-[18px]"></i> 儲存此日設定
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* 後台 - 權限設定 (僅主管理員) */}
+              {adminTab === 'settings' && currentAdmin?.role === 'main' && (
+                <div className="bg-blue-950 rounded-2xl border border-blue-800 p-6 shadow-2xl animate-in fade-in space-y-6">
+                  <h3 className="text-xl font-bold text-yellow-400 flex items-center border-b border-blue-800 pb-4 mb-4">
+                    <i className="fas fa-cog mr-2 text-[22px]"></i> 密碼與權限設定
+                  </h3>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="bg-blue-900/40 p-5 rounded-xl border border-blue-700/50">
+                      <h4 className="text-white font-bold mb-4 flex items-center"><i className="fas fa-user-shield text-yellow-500 mr-2"></i> 修改主管理員密碼</h4>
+                      <div className="space-y-4">
+                        <div>
+                          <label className="block text-sm text-blue-200 mb-1">新密碼</label>
+                          <input type="text" id="newMainPwd" placeholder="輸入新密碼" className="w-full bg-blue-950 border border-blue-600 rounded-lg p-3 text-white focus:outline-none focus:border-yellow-400" />
+                        </div>
+                        <button onClick={() => {
+                          const val = document.getElementById('newMainPwd').value;
+                          if (val) {
+                            saveAdminAccounts({...adminAccounts, main: val});
+                            alert('主管理員密碼已成功修改！');
+                            document.getElementById('newMainPwd').value = '';
+                          }
+                        }} className="w-full py-2 bg-yellow-500 text-blue-950 font-bold rounded-lg hover:bg-yellow-400">儲存主管理員密碼</button>
+                      </div>
+                    </div>
+
+                    <div className="bg-blue-900/40 p-5 rounded-xl border border-blue-700/50">
+                      <h4 className="text-white font-bold mb-4 flex items-center"><i className="fas fa-user-edit text-yellow-500 mr-2"></i> 修改副管理員密碼</h4>
+                      <p className="text-xs text-blue-300 mb-4">副管理員僅能查看訂單與勾選完成，無法刪除或發布週期預約。</p>
+                      <div className="space-y-4">
+                        <div>
+                          <label className="block text-sm text-blue-200 mb-1">目前密碼：<span className="font-mono text-yellow-400">{adminAccounts.sub}</span></label>
+                          <input type="text" id="newSubPwd" placeholder="輸入新密碼 (若要刪除權限請留空)" className="w-full bg-blue-950 border border-blue-600 rounded-lg p-3 text-white focus:outline-none focus:border-yellow-400" />
+                        </div>
+                        <div className="flex gap-2">
+                          <button onClick={() => {
+                            const val = document.getElementById('newSubPwd').value;
+                            if (val) {
+                              saveAdminAccounts({...adminAccounts, sub: val});
+                              alert('副管理員密碼已成功修改！');
+                              document.getElementById('newSubPwd').value = '';
+                            }
+                          }} className="flex-1 py-2 bg-yellow-500 text-blue-950 font-bold rounded-lg hover:bg-yellow-400">儲存修改</button>
+                          <button onClick={() => {
+                            saveAdminAccounts({...adminAccounts, sub: ''});
+                            alert('副管理員權限已停用 (無密碼可登入)。');
+                          }} className="px-4 py-2 bg-red-900 text-red-300 border border-red-700 font-bold rounded-lg hover:bg-red-700 hover:text-white">停用副帳號</button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+            </div>
+
+            {/* 後台 MODAL: 週期預約 */}
+            {showBulkModal && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm custom-scrollbar overflow-y-auto">
+                <div className="bg-blue-950 w-full max-w-2xl rounded-2xl border border-blue-700 shadow-2xl my-8 relative">
+                  <div className="p-5 border-b border-blue-800 flex justify-between items-center bg-blue-900/50 rounded-t-2xl">
+                    <h3 className="text-xl font-bold text-yellow-400 flex items-center">
+                      <i className="fas fa-calendar-alt mr-2 text-[22px]"></i> 新增長期/週期預約
+                    </h3>
+                    <button onClick={() => setShowBulkModal(false)} className="text-blue-300 hover:text-white bg-blue-900 hover:bg-red-500 rounded-full p-1.5 transition-colors"><i className="fas fa-times text-[20px]"></i></button>
+                  </div>
+
+                  <div className="p-6 space-y-5">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm font-medium text-blue-200 mb-1.5">預約人姓名 / 標籤</label>
+                        <input type="text" placeholder="例：王先生-季繳" value={bulkData.name} onChange={e => setBulkData({...bulkData, name: e.target.value})} className="w-full bg-blue-900 border border-blue-700 rounded-lg p-3 text-white focus:border-yellow-400 focus:outline-none" />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-blue-200 mb-1.5">繳費週期</label>
+                        <select value={bulkData.weeks} onChange={e => setBulkData({...bulkData, weeks: parseInt(e.target.value)})} className="w-full bg-blue-900 border border-blue-700 rounded-lg p-3 text-white focus:border-yellow-400 focus:outline-none cursor-pointer">
+                          <option value={4}>月繳 (4週)</option>
+                          <option value={12}>季繳 (12週)</option>
+                          <option value={24}>半年繳 (24週)</option>
+                          <option value={48}>年繳 (48週)</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-blue-200 mb-1.5">首次預約日期</label>
+                      <input type="date" min={todayString} value={bulkData.startDate} onChange={e => setBulkData({...bulkData, startDate: e.target.value})} className="w-full bg-blue-900 border border-blue-700 rounded-lg p-3 text-white focus:border-yellow-400 focus:outline-none [color-scheme:dark] cursor-pointer" />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-blue-200 mb-2">預約時段 (可複選)</label>
+                      <div className="grid grid-cols-3 sm:grid-cols-5 gap-2 max-h-48 overflow-y-auto custom-scrollbar pr-2">
+                        {allTimeSlots.map(time => {
+                          const selected = bulkData.times.includes(time);
+                          return (
+                            <button key={time} type="button" onClick={() => {
+                              const newTimes = selected ? bulkData.times.filter(t => t !== time) : [...bulkData.times, time];
+                              setBulkData({...bulkData, times: newTimes});
+                            }} className={`py-2 px-1 rounded-lg border text-xs font-medium transition-colors ${selected ? 'bg-yellow-500 border-yellow-400 text-blue-950' : 'bg-blue-900 border-blue-700 text-blue-100 hover:border-yellow-400'}`}>
+                              {displayTime(time)}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-blue-200 mb-2">預約場地 (可複選)</label>
+                      <div className="flex gap-3">
+                        {[1, 2, 3, 4].map(c => {
+                          const cStr = c.toString();
+                          const selected = bulkData.courts.includes(cStr);
+                          return (
+                            <button key={c} type="button" onClick={() => {
+                              const newCourts = selected ? bulkData.courts.filter(court => court !== cStr) : [...bulkData.courts, cStr];
+                              setBulkData({...bulkData, courts: newCourts});
+                            }} className={`flex-1 py-3 rounded-lg border-2 font-bold transition-all ${selected ? 'bg-yellow-500 border-yellow-400 text-blue-950' : 'bg-blue-900 border-blue-700 text-white hover:border-yellow-400'}`}>
+                              第 {c} 場
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {bulkConflicts.length > 0 && (
+                      <div className="bg-red-950/50 border border-red-800 rounded-lg p-4">
+                        <h4 className="text-red-400 font-bold flex items-center mb-2"><i className="fas fa-exclamation-triangle mr-1 text-[18px]"></i> 建立失敗：發現時段衝突！</h4>
+                        <p className="text-sm text-red-200 mb-2">以下未來日期/場地已被其他人預約(或被設定為暢打)，請手動調整或清理後再試：</p>
+                        <ul className="text-xs text-red-300 list-disc list-inside max-h-24 overflow-y-auto custom-scrollbar">
+                          {bulkConflicts.map((msg, i) => <li key={i}>{msg}</li>)}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="p-5 border-t border-blue-800 flex justify-end gap-3 bg-blue-900/30 rounded-b-2xl">
+                    <button onClick={() => setShowBulkModal(false)} className="px-5 py-2 rounded-lg text-blue-200 hover:text-white hover:bg-blue-800 transition-colors">取消</button>
+                    <button onClick={handleBulkSubmit} className="px-6 py-2 bg-yellow-500 text-blue-950 font-bold rounded-lg hover:bg-yellow-400 transition-colors shadow-lg">自動產生 {bulkData.weeks} 筆預約</button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* 查看圖片 Modal */}
+            {viewImage && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4 backdrop-blur-sm" onClick={() => setViewImage(null)}>
+                <div className="relative max-w-3xl max-h-[90vh] bg-blue-950 p-2 rounded-xl border border-blue-700 shadow-2xl" onClick={e => e.stopPropagation()}>
+                  <button className="absolute -top-4 -right-4 bg-red-500 text-white rounded-full p-2 hover:bg-red-600 shadow-lg border-2 border-blue-950" onClick={() => setViewImage(null)}>
+                    <i className="fas fa-times text-[20px]"></i>
+                  </button>
+                  <img src={viewImage} alt="轉帳截圖" className="max-w-full max-h-[85vh] rounded-lg object-contain" />
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      }
+
+      const stepsTitle = ['選擇日期', '選擇時間', '選擇場地', '確認資料'];
+
+      return (
+        <div className="min-h-screen bg-blue-900 font-sans selection:bg-yellow-500 selection:text-blue-900">
+          <header className="flex justify-between items-center p-4 sm:px-6 bg-blue-950/80 backdrop-blur-md sticky top-0 z-10 border-b border-blue-800">
+            <h1 className="text-xl font-bold text-yellow-400 flex items-center tracking-wide">
+              冠軍羽球館 <span className="text-sm font-normal text-blue-200 ml-2 hidden sm:inline">（國光店）</span>
+            </h1>
+            <button onClick={() => setView('dashboard')} className="flex items-center text-xs font-medium px-4 py-1.5 rounded-full border border-blue-500 bg-blue-800 text-white hover:bg-blue-700 transition-colors shadow-sm">
+              <i className="fas fa-home mr-1.5 text-[14px]"></i> 會員中心
+            </button>
+          </header>
+
+          <main className="max-w-lg mx-auto p-4 sm:p-6 pb-24">
+            <div>
+              <div className="text-center mb-8 mt-4">
+                <h2 className="text-3xl font-extrabold text-white mb-2 tracking-wide drop-shadow-md">線上預約系統</h2>
+                <p className="text-blue-300 text-sm">請依序完成預約步驟。</p>
+              </div>
+
+              <div className="flex justify-between mb-8 relative px-2">
+                <div className="absolute top-4 left-6 right-6 h-0.5 bg-blue-800 -z-10"></div>
+                <div className="absolute top-4 left-6 h-0.5 bg-yellow-500 transition-all duration-300 -z-10" style={{ width: `${((step - 1) / 3) * 100}%`, maxWidth: 'calc(100% - 3rem)' }}></div>
+                {stepsTitle.map((s, i) => (
+                  <div key={i} className="flex flex-col items-center w-1/4">
+                    <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold shadow-md transition-colors duration-300 ${step > i + 1 || step === i + 1 ? 'bg-yellow-500 text-blue-950 ring-4 ring-blue-900' : 'bg-blue-900 text-blue-400 border-2 border-blue-700'}`}>
+                      {step > i + 1 ? <i className="fas fa-check text-[16px]"></i> : i + 1}
+                    </div>
+                    <span className={`text-xs mt-2 transition-colors duration-300 ${step === i + 1 ? 'text-yellow-400 font-bold' : 'text-blue-300'}`}>{s}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className={`bg-blue-950/60 rounded-3xl shadow-2xl border border-blue-800/60 backdrop-blur-sm p-6 sm:p-8 min-h-[350px]`}>
+
+              {step === 1 && (
+                <div className="space-y-6 animate-in fade-in zoom-in-95 duration-300">
+                  <div className="flex items-center justify-between border-b border-blue-800 pb-3">
+                    <h3 className="text-xl font-bold text-yellow-400 flex items-center"><i className="fas fa-calendar-alt mr-2 text-[22px]"></i> 選擇預約日期</h3>
+                  </div>
+                  <div className="bg-blue-900/50 p-4 rounded-xl border border-blue-800/50">
+                    <input type="date" min={todayString} max={maxDateString} value={bookingData.date} onChange={(e) => setBookingData({ ...bookingData, date: e.target.value, times: [], court: [] })} className="w-full bg-blue-950 border-2 border-blue-700 rounded-xl p-4 text-xl text-white font-medium focus:outline-none focus:border-yellow-400 cursor-pointer shadow-inner [color-scheme:dark] transition-colors hover:border-blue-500" />
+                  </div>
+                  <div className="bg-blue-900/30 rounded-lg p-3 border-l-4 border-yellow-500">
+                    <p className="text-sm text-blue-200 leading-relaxed">
+                      <span className="text-yellow-400 font-bold">• 臨打預約僅開放未來一週內</span><br/>
+                      • 周一到周五：9:00～22:00<br/>
+                      • 週六、周日：7:00～22:00
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {step === 2 && (
+                <div className="space-y-5 animate-in fade-in zoom-in-95 duration-300">
+                  <div className="flex items-center justify-between border-b border-blue-800 pb-3">
+                    <h3 className="text-xl font-bold text-yellow-400 flex items-center"><i className="fas fa-clock mr-2 text-[22px]"></i> 選擇時間段</h3>
+                    <span className="text-sm bg-blue-900 text-blue-300 px-2 py-1 rounded-md">{bookingData.date}</span>
+                  </div>
+                  <p className="text-sm font-medium text-yellow-400 text-center bg-yellow-500/10 py-2 rounded-lg border border-yellow-500/20">💡 選擇多個連續時段更方便安排～</p>
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 max-h-[280px] overflow-y-auto pr-2 custom-scrollbar">
+                    {getAvailableTimes(bookingData.date).map(t => {
+                      const fullyBooked = isTimeFullyBooked(t.value);
+                      const disabled = t.isPast || fullyBooked;
+                      const selected = bookingData.times.includes(t.value);
+                      return (
+                        <button key={t.value} disabled={disabled} onClick={() => toggleTime(t.value)} className={`relative py-3 px-1 rounded-xl border-2 text-sm font-medium transition-all ${disabled ? 'bg-blue-950 border-blue-900 text-blue-600 cursor-not-allowed' : selected ? 'bg-yellow-500 border-yellow-400 text-blue-950 shadow-md' : 'bg-blue-900/60 border-blue-700 text-blue-100 hover:border-yellow-400 hover:text-yellow-400'}`}>
+                          {t.label}
+                          {fullyBooked && <span className="absolute inset-0 bg-blue-950/80 rounded-xl flex items-center justify-center text-xs font-bold text-red-400 border border-red-900/50 backdrop-blur-[1px]">時段已滿</span>}
+                          {t.isPast && !fullyBooked && <span className="absolute inset-0 bg-blue-950/80 rounded-xl flex items-center justify-center text-xs font-bold text-blue-500 border border-blue-800 backdrop-blur-[1px]">已過去</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {step === 3 && (
+                <div className="space-y-6 animate-in fade-in zoom-in-95 duration-300">
+                  <div className="flex items-center justify-between border-b border-blue-800 pb-3">
+                    <h3 className="text-xl font-bold text-yellow-400 flex items-center"><i className="fas fa-map-marker-alt mr-2 text-[22px]"></i> 選擇場地</h3>
+                    <div className="text-right text-xs text-blue-300"><div>{bookingData.date}</div><div>已選 {bookingData.times.length} 個時段</div></div>
+                  </div>
+                  <div className="bg-blue-900/30 rounded-lg p-3 mb-4">
+                    <p className="text-sm text-blue-200">您可以 <span className="text-yellow-400 font-bold">點選多個場地</span>，被設定為暢打或已有人預約的場地將無法點選。</p>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    {[1, 2, 3, 4].map(court => {
+                      const available = isCourtAvailable(court);
+                      const selected = bookingData.court.includes(court.toString());
+
+                      // 檢查這個場地是否因為暢打而被鎖
+                      let blockedByOp = false;
+                      for (const t of bookingData.times) {
+                        if (isCourtBlockedByOpenPlay(bookingData.date, t, court.toString())) blockedByOp = true;
+                      }
+
+                      return (
+                        <button key={court} disabled={!available} onClick={() => toggleCourt(court)} className={`relative overflow-hidden py-6 rounded-2xl border-2 text-lg font-bold transition-all duration-200 ${!available ? 'bg-blue-950 border-blue-900 text-blue-600 cursor-not-allowed opacity-80' : selected ? 'bg-yellow-500 border-yellow-400 text-blue-950 shadow-[0_0_15px_rgba(234,179,8,0.3)] scale-[1.02]' : 'bg-blue-900/60 border-blue-700 text-white hover:border-yellow-500/50 hover:bg-blue-800'}`}>
+                          第 {court} 場地
+                          {selected && <i className="fas fa-check-circle absolute top-2 right-2 text-blue-900 text-[18px]"></i>}
+                          {!available && (
+                            <div className="absolute inset-0 bg-blue-950/80 flex flex-col items-center justify-center border-2 border-red-900/40 backdrop-blur-[2px]">
+                              {blockedByOp ? (
+                                <span className="text-sm font-bold bg-purple-900/80 text-purple-300 px-3 py-1 rounded-full border border-purple-700 flex items-center">
+                                  <BadmintonIcon className="text-[14px] mr-1" /> 暢打保留
+                                </span>
+                              ) : (
+                                <span className="text-sm font-bold bg-red-950/80 text-red-400 px-3 py-1 rounded-full border border-red-800">已被預約</span>
+                              )}
+                            </div>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {step === 4 && (
+                <div className="space-y-5 animate-in fade-in zoom-in-95 duration-300">
+                  <h3 className="text-xl font-bold text-yellow-400 flex items-center border-b border-blue-800 pb-3"><i className="fas fa-user mr-2 text-[24px]"></i> 確認並填寫資料</h3>
+
+                  {/* === 動態計算訂金金額區塊 === */}
+                  <div className="bg-blue-900/40 p-4 rounded-xl border border-blue-700/50 shadow-inner mb-4">
+                    <h4 className="text-white font-semibold mb-3 flex items-center text-sm">
+                      <i className="fas fa-money-bill-wave text-yellow-500 mr-2"></i> 匯款資訊
+                    </h4>
+                    <div className="text-sm text-blue-200 space-y-1.5">
+                      <p>銀行代碼：<span className="text-white font-bold text-base ml-1">808 (玉山銀行)</span></p>
+                      <p>轉入帳號：<span className="text-yellow-400 font-bold tracking-widest text-lg ml-1">0521979250523</span></p>
+                      <div className="text-sm text-blue-100 mt-2 border-t border-blue-800/50 pt-2 bg-blue-950/50 p-3 rounded-lg border border-blue-800">
+                        <div className="flex justify-between items-center">
+                          <span>本次應付訂金：</span>
+                          <span className="text-xl font-bold text-red-400">NT$ {bookingData.court.length * bookingData.times.length * 100}</span>
+                        </div>
+                        <p className="text-xs text-blue-400 mt-1 text-right">
+                          (計算方式：{bookingData.court.length} 場地 × {bookingData.times.length} 小時 × 100元)
+                        </p>
+                      </div>
+                      <p className="text-xs text-red-400 mt-1">※ 請先完成匯款後，再上傳截圖。</p>
+                    </div>
+                  </div>
+
+                  <div className="bg-blue-900/40 p-4 rounded-xl border border-blue-700/50 shadow-inner">
+                    <h4 className="text-white font-semibold mb-3 flex items-center text-sm"><span className="w-1.5 h-4 bg-yellow-500 rounded-full mr-2"></span> 預約明細</h4>
+                    <div className="grid grid-cols-2 gap-y-2 text-sm">
+                      <div className="text-blue-300">日期：</div><div className="text-white font-medium text-right">{bookingData.date}</div>
+                      <div className="text-blue-300">時段：</div><div className="text-white font-medium text-right">{bookingData.times.length} 小時</div>
+                      <div className="text-blue-300">場地：</div><div className="text-white font-medium text-right">第 {bookingData.court.join(', ')} 場地</div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-sm font-medium text-blue-200 mb-1.5">1. 預約人姓名 <span className="text-blue-400 text-xs">(系統自動帶入)</span></label>
+                      <input type="text" readOnly value={bookingData.name} className="w-full bg-blue-900/50 border border-blue-800 rounded-xl p-3.5 text-blue-300 cursor-not-allowed font-medium" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-blue-200 mb-1.5">2. 會員電話 <span className="text-blue-400 text-xs">(將作為後台核對依據)</span></label>
+                      <input type="text" readOnly value={currentUser?.phone || ''} className="w-full bg-blue-900/50 border border-blue-800 rounded-xl p-3.5 text-blue-300 cursor-not-allowed font-mono font-medium" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-blue-200 mb-1.5">3. 轉帳完成截圖 <span className="text-red-400">*</span></label>
+                      <div className="border-2 border-dashed border-blue-600 hover:border-yellow-500 transition-colors rounded-xl p-4 flex flex-col items-center justify-center bg-blue-950/50 group relative overflow-hidden">
+                        {bookingData.screenshot ? (
+                           <div className="w-full flex flex-col items-center">
+                             <img src={bookingData.screenshot} alt="預覽" className="max-h-32 object-contain rounded-md mb-3 border border-blue-700" />
+                             <label className="cursor-pointer text-sm bg-blue-800 text-yellow-400 px-4 py-2 rounded-full hover:bg-blue-700 hover:text-white transition-colors">
+                               更換圖片
+                               <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
+                             </label>
+                           </div>
+                        ) : (
+                          <label className="cursor-pointer flex flex-col items-center justify-center w-full py-4">
+                            <i className="fas fa-image text-blue-400 group-hover:text-yellow-400 transition-colors mb-3 mt-2 text-[36px]"></i>
+                            <span className="text-sm text-blue-300 bg-blue-800 text-yellow-400 py-2.5 px-5 rounded-full font-semibold hover:bg-blue-700 hover:text-white transition-all">選擇檔案上傳</span>
+                            <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
+                          </label>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-between items-center mt-6">
+              {step > 1 ? (
+                <button onClick={() => setStep(step - 1)} className="flex items-center px-5 py-3 rounded-xl border border-blue-700 text-blue-300 font-medium hover:bg-blue-800 hover:text-white transition-colors">
+                  <i className="fas fa-chevron-left text-[20px] mr-1"></i> 上一步
+                </button>
+              ) : <div></div>}
+
+              {step < 4 ? (
+                <button onClick={() => setStep(step + 1)} disabled={!canProceed()} className="flex items-center px-6 py-3 rounded-xl bg-yellow-500 text-blue-950 font-bold hover:bg-yellow-400 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-lg shadow-yellow-500/20">
+                  下一步 <i className="fas fa-chevron-right text-[20px] ml-1"></i>
+                </button>
+              ) : (
+                <button onClick={handleSubmit} disabled={!bookingData.name || !bookingData.screenshot} className="flex-1 ml-4 py-3 bg-yellow-500 text-blue-950 font-bold rounded-xl text-lg hover:bg-yellow-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-yellow-500/30 flex items-center justify-center">
+                  送出預約表單 <i className="fas fa-paper-plane ml-2 text-[18px]"></i>
+                </button>
+              )}
+            </div>
+          </main>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
