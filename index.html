@@ -44,27 +44,6 @@
       </svg>
     );
 
-    const compressImage = (file, maxWidth = 800) => {
-      return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.readAsDataURL(file);
-        reader.onload = (event) => {
-          const img = new Image();
-          img.src = event.target.result;
-          img.onload = () => {
-            const canvas = document.createElement('canvas');
-            const ratio = maxWidth / img.width;
-            canvas.width = maxWidth;
-            canvas.height = img.height * ratio;
-            const ctx = canvas.getContext('2d');
-            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-            resolve(canvas.toDataURL('image/jpeg', 0.7));
-          };
-          img.onerror = (err) => reject(err);
-        };
-      });
-    };
-
     function App() {
       const [view, setView] = useState('login');
       const [step, setStep] = useState(1);
@@ -79,7 +58,7 @@
       const [forgotStep, setForgotStep] = useState(1);
 
       // === 預約與後台狀態 ===
-      const [bookingData, setBookingData] = useState({ date: '', times: [], court: [], name: '', screenshot: null });
+      const [bookingData, setBookingData] = useState({ date: '', times: [], court: [], name: '', transferCode: '' });
       const [bookings, setBookings] = useState([]);
       const [openPlayOverrides, setOpenPlayOverrides] = useState({}); // { 'YYYY-MM-DD': ['1', '2'] }
 
@@ -87,7 +66,6 @@
       const [loginError, setLoginError] = useState('');
       const [adminTab, setAdminTab] = useState('list'); // 'list', 'calendar', 'users', 'openplay', 'settings'
       const [listFilter, setListFilter] = useState('all');
-      const [viewImage, setViewImage] = useState(null);
       const [userSearchTerm, setUserSearchTerm] = useState('');
 
       // 管理員帳密狀態
@@ -110,12 +88,13 @@
             const localOverrides = JSON.parse(localStorage.getItem('champion_openplay')) || {};
             const localAdmin = JSON.parse(localStorage.getItem('champion_admin')) || { main: 'lu2588666', sub: 'sub123' };
 
-            // 系統啟動時，自動清理「過期」預約的轉帳截圖，只保留文字紀錄
+            // 已改用匯款後五碼核對，清除舊版預約殘留的轉帳截圖以釋放儲存空間
             let updated = false;
             localBookings = localBookings.map(b => {
-              if (b.date < todayString && b.screenshot !== null) {
+              if ('screenshot' in b) {
                 updated = true;
-                return { ...b, screenshot: null };
+                const { screenshot, ...rest } = b;
+                return rest;
               }
               return b;
             });
@@ -255,17 +234,7 @@
         setBookingData({ ...bookingData, court: updatedCourts });
       };
 
-      const handleImageUpload = async (e) => {
-        const file = e.target.files[0];
-        if (file) {
-          try {
-            const compressedBase64 = await compressImage(file);
-            setBookingData({ ...bookingData, screenshot: compressedBase64 });
-          } catch (error) {
-            alert('圖片處理失敗，請重試！');
-          }
-        }
-      };
+      const isValidTransferCode = (code) => /^\d{5}$/.test(code);
 
       const canProceed = () => {
         if (step === 1) return bookingData.date !== '';
@@ -336,7 +305,7 @@
       const handleLogout = () => { setCurrentUser(null); setView('login'); };
 
       const startBooking = () => {
-        setBookingData({ date: '', times: [], court: [], name: currentUser.name, screenshot: null });
+        setBookingData({ date: '', times: [], court: [], name: currentUser.name, transferCode: '' });
         setStep(1);
         setView('booking');
       };
@@ -419,7 +388,7 @@
           id: Date.now() + index, userId: 'admin', userPhone: '內部建立', date: date,
           times: [...bulkData.times].sort((a, b) => parseInt(a) - parseInt(b)),
           court: [...bulkData.courts].sort((a, b) => parseInt(a) - parseInt(b)),
-          name: bulkData.name, screenshot: null, isConfirmed: true, isBulk: true,
+          name: bulkData.name, transferCode: null, isConfirmed: true, isBulk: true,
           createdAt: new Date().toISOString()
         }));
 
@@ -759,7 +728,7 @@
                           <th className="p-4 whitespace-nowrap">預約場地</th>
                           <th className="p-4 whitespace-nowrap">預約人姓名</th>
                           <th className="p-4 whitespace-nowrap">會員電話</th>
-                          <th className="p-4 text-center whitespace-nowrap w-32">轉帳截圖</th>
+                          <th className="p-4 text-center whitespace-nowrap w-32">匯款後五碼</th>
                           {currentAdmin?.role === 'main' && <th className="p-4 text-center whitespace-nowrap w-20">操作</th>}
                         </tr>
                       </thead>
@@ -793,12 +762,9 @@
                               <td className="p-4 font-medium">{b.name}</td>
                               <td className="p-4 font-mono text-blue-300">{b.userPhone || '無'}</td>
                               <td className="p-4 text-center">
-                                {b.screenshot ? (
-                                  <div className="w-16 h-16 mx-auto rounded overflow-hidden border-2 border-blue-700 hover:border-yellow-400 cursor-pointer transition-colors relative group bg-blue-900 flex items-center justify-center" onClick={() => setViewImage(b.screenshot)} title="點擊放大查看">
-                                    <img src={b.screenshot} alt="截圖" className="w-full h-full object-cover" />
-                                    <div className="absolute inset-0 bg-blue-950/60 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity"><i className="fas fa-image text-yellow-400 text-[20px]"></i></div>
-                                  </div>
-                                ) : <span className="text-blue-600 text-xs bg-blue-900/50 px-2 py-1 rounded">無 (已清除/後台)</span>}
+                                {b.transferCode ? (
+                                  <span className="font-mono font-bold text-yellow-400 bg-blue-900 border border-blue-700 px-3 py-1 rounded tracking-widest">{b.transferCode}</span>
+                                ) : <span className="text-blue-600 text-xs bg-blue-900/50 px-2 py-1 rounded">無 (後台建立)</span>}
                               </td>
                               {currentAdmin?.role === 'main' && (
                                 <td className="p-4 text-center">
@@ -1179,18 +1145,6 @@
                 </div>
               </div>
             )}
-
-            {/* 查看圖片 Modal */}
-            {viewImage && (
-              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4 backdrop-blur-sm" onClick={() => setViewImage(null)}>
-                <div className="relative max-w-3xl max-h-[90vh] bg-blue-950 p-2 rounded-xl border border-blue-700 shadow-2xl" onClick={e => e.stopPropagation()}>
-                  <button className="absolute -top-4 -right-4 bg-red-500 text-white rounded-full p-2 hover:bg-red-600 shadow-lg border-2 border-blue-950" onClick={() => setViewImage(null)}>
-                    <i className="fas fa-times text-[20px]"></i>
-                  </button>
-                  <img src={viewImage} alt="轉帳截圖" className="max-w-full max-h-[85vh] rounded-lg object-contain" />
-                </div>
-              </div>
-            )}
           </div>
         );
       }
@@ -1336,7 +1290,7 @@
                           (計算方式：{bookingData.court.length} 場地 × {bookingData.times.length} 小時 × 100元)
                         </p>
                       </div>
-                      <p className="text-xs text-red-400 mt-1">※ 請先完成匯款後，再上傳截圖。</p>
+                      <p className="text-xs text-red-400 mt-1">※ 請先完成匯款後，再填寫匯款帳號後五碼。</p>
                     </div>
                   </div>
 
@@ -1359,24 +1313,9 @@
                       <input type="text" readOnly value={currentUser?.phone || ''} className="w-full bg-blue-900/50 border border-blue-800 rounded-xl p-3.5 text-blue-300 cursor-not-allowed font-mono font-medium" />
                     </div>
                     <div>
-                      <label className="block text-sm font-medium text-blue-200 mb-1.5">3. 轉帳完成截圖 <span className="text-red-400">*</span></label>
-                      <div className="border-2 border-dashed border-blue-600 hover:border-yellow-500 transition-colors rounded-xl p-4 flex flex-col items-center justify-center bg-blue-950/50 group relative overflow-hidden">
-                        {bookingData.screenshot ? (
-                           <div className="w-full flex flex-col items-center">
-                             <img src={bookingData.screenshot} alt="預覽" className="max-h-32 object-contain rounded-md mb-3 border border-blue-700" />
-                             <label className="cursor-pointer text-sm bg-blue-800 text-yellow-400 px-4 py-2 rounded-full hover:bg-blue-700 hover:text-white transition-colors">
-                               更換圖片
-                               <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
-                             </label>
-                           </div>
-                        ) : (
-                          <label className="cursor-pointer flex flex-col items-center justify-center w-full py-4">
-                            <i className="fas fa-image text-blue-400 group-hover:text-yellow-400 transition-colors mb-3 mt-2 text-[36px]"></i>
-                            <span className="text-sm text-blue-300 bg-blue-800 text-yellow-400 py-2.5 px-5 rounded-full font-semibold hover:bg-blue-700 hover:text-white transition-all">選擇檔案上傳</span>
-                            <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
-                          </label>
-                        )}
-                      </div>
+                      <label className="block text-sm font-medium text-blue-200 mb-1.5">3. 匯款帳號後五碼 <span className="text-red-400">*</span></label>
+                      <input type="text" inputMode="numeric" maxLength={5} placeholder="請輸入 5 位數字" value={bookingData.transferCode} onChange={e => setBookingData({ ...bookingData, transferCode: e.target.value.replace(/\D/g, '').slice(0, 5) })} className="w-full bg-blue-950 border-2 border-blue-700 rounded-xl p-3.5 text-xl text-white font-mono font-bold tracking-[0.5em] text-center focus:outline-none focus:border-yellow-400 transition-colors placeholder:text-base placeholder:tracking-normal placeholder:font-normal placeholder-blue-500" />
+                      {bookingData.transferCode && !isValidTransferCode(bookingData.transferCode) && <p className="text-red-400 text-xs mt-1.5">請輸入完整 5 位數字</p>}
                     </div>
                   </div>
                 </div>
@@ -1395,7 +1334,7 @@
                   下一步 <i className="fas fa-chevron-right text-[20px] ml-1"></i>
                 </button>
               ) : (
-                <button onClick={handleSubmit} disabled={!bookingData.name || !bookingData.screenshot} className="flex-1 ml-4 py-3 bg-yellow-500 text-blue-950 font-bold rounded-xl text-lg hover:bg-yellow-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-yellow-500/30 flex items-center justify-center">
+                <button onClick={handleSubmit} disabled={!bookingData.name || !isValidTransferCode(bookingData.transferCode)} className="flex-1 ml-4 py-3 bg-yellow-500 text-blue-950 font-bold rounded-xl text-lg hover:bg-yellow-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-yellow-500/30 flex items-center justify-center">
                   送出預約表單 <i className="fas fa-paper-plane ml-2 text-[18px]"></i>
                 </button>
               )}
