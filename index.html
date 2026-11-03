@@ -72,6 +72,7 @@
 
       const [adminPasswordInput, setAdminPasswordInput] = useState('');
       const [loginError, setLoginError] = useState('');
+      const [showPwdHint, setShowPwdHint] = useState(false);
       const [adminTab, setAdminTab] = useState('list'); // 'list', 'calendar', 'customers', 'openplay', 'settings'
       const [listFilter, setListFilter] = useState('all');
       const [customerSearch, setCustomerSearch] = useState('');
@@ -279,7 +280,7 @@
           setAdminTab('list');
           setAdminPasswordInput('');
           setLoginError('');
-        } else if (adminPasswordInput === adminAccounts.sub) {
+        } else if (adminAccounts.sub && adminPasswordInput === adminAccounts.sub) {
           setCurrentAdmin({ role: 'sub' });
           setView('admin-panel');
           setAdminTab('list');
@@ -488,14 +489,15 @@
                 </div>
                 <button type="submit" className="w-full py-4 bg-red-500 text-white font-bold rounded-xl hover:bg-red-400 transition-colors shadow-lg shadow-red-500/20">登入後台</button>
                 <div className="flex justify-between items-center mt-2 px-1">
-                  <button type="button" onClick={() => {
-                    if (window.confirm('是否要將主管理員密碼重置回系統預設值 (lu2588666)？')) {
-                      saveAdminAccounts({ ...adminAccounts, main: 'lu2588666' });
-                      alert('主管理員密碼已重置為 lu2588666，請重新登入！');
-                    }
-                  }} className="text-blue-400 text-sm hover:text-white transition-colors">忘記密碼？</button>
-                  <button type="button" onClick={() => { setView('booking'); setAdminPasswordInput(''); setLoginError(''); }} className="text-blue-300 text-sm hover:text-white transition-colors">返回預約首頁</button>
+                  <button type="button" onClick={() => setShowPwdHint(!showPwdHint)} aria-expanded={showPwdHint} className="text-blue-400 text-sm hover:text-white transition-colors">忘記密碼？</button>
+                  <button type="button" onClick={() => { setView('booking'); setAdminPasswordInput(''); setLoginError(''); setShowPwdHint(false); }} className="text-blue-300 text-sm hover:text-white transition-colors">返回預約首頁</button>
                 </div>
+                {showPwdHint && (
+                  <div className="bg-blue-900/60 border border-blue-700 rounded-xl p-3 text-sm text-blue-200 leading-relaxed">
+                    <p>副管理員忘記密碼：請聯絡主管理員，到「權限設定」重新設定。</p>
+                    <p className="mt-1">主管理員忘記密碼：請聯絡系統維護人員協助重設。</p>
+                  </div>
+                )}
               </form>
             </div>
           </div>
