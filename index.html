@@ -49,27 +49,33 @@
 
       const [step, setStep] = useState(1);
 
-      // 記住上次填寫的姓名與電話，下次預約自動帶入（只存在這台裝置）
+      // 記住上次填寫的姓名、電話與匯款後五碼，下次預約與查詢自動帶入（只存在這台裝置）
       const loadContact = () => {
-        try { return JSON.parse(localStorage.getItem('champion_contact')) || { name: '', phone: '' }; }
-        catch (e) { return { name: '', phone: '' }; }
+        try { return { name: '', phone: '', code: '', ...JSON.parse(localStorage.getItem('champion_contact')) }; }
+        catch (e) { return { name: '', phone: '', code: '' }; }
       };
       const saveContact = (contact) => {
         try { localStorage.setItem('champion_contact', JSON.stringify(contact)); } catch (e) {}
       };
 
       // === 預約與後台狀態 ===
-      const emptyBooking = () => ({ date: '', times: [], court: [], ...loadContact(), transferCode: '' });
+      const emptyBooking = () => {
+        const { name, phone } = loadContact();
+        return { date: '', times: [], court: [], name, phone, transferCode: '' };
+      };
       const [bookingData, setBookingData] = useState(emptyBooking);
       const [lastBooking, setLastBooking] = useState(null);
       const [lookupPhone, setLookupPhone] = useState(() => loadContact().phone);
+      const [lookupCode, setLookupCode] = useState(() => loadContact().code);
       const [bookings, setBookings] = useState([]);
       const [openPlayOverrides, setOpenPlayOverrides] = useState({}); // { 'YYYY-MM-DD': ['1', '2'] }
 
       const [adminPasswordInput, setAdminPasswordInput] = useState('');
       const [loginError, setLoginError] = useState('');
-      const [adminTab, setAdminTab] = useState('list'); // 'list', 'calendar', 'openplay', 'settings'
+      const [adminTab, setAdminTab] = useState('list'); // 'list', 'calendar', 'customers', 'openplay', 'settings'
       const [listFilter, setListFilter] = useState('all');
+      const [customerSearch, setCustomerSearch] = useState('');
+      const [expandedPhone, setExpandedPhone] = useState(null);
 
       // 管理員帳密狀態
       const [adminAccounts, setAdminAccounts] = useState({ main: 'lu2588666', sub: 'sub123' });
@@ -258,8 +264,9 @@
           createdAt: new Date().toISOString()
         };
         saveBookings([...bookings, newBooking]);
-        saveContact({ name: newBooking.name, phone });
+        saveContact({ name: newBooking.name, phone, code: newBooking.transferCode });
         setLookupPhone(phone);
+        setLookupCode(newBooking.transferCode);
         setLastBooking(newBooking);
         setView('done');
       };
@@ -294,6 +301,12 @@
         const targetBooking = bookings.find(b => b.id === id);
         if (!targetBooking) return;
         saveBookings(bookings.map(b => b.id === id ? { ...b, isConfirmed: !targetBooking.isConfirmed } : b));
+      };
+
+      const toggleNoShow = (id) => {
+        const targetBooking = bookings.find(b => b.id === id);
+        if (!targetBooking) return;
+        saveBookings(bookings.map(b => b.id === id ? { ...b, noShow: !targetBooking.noShow } : b));
       };
 
       const handleBulkSubmit = () => {
@@ -407,8 +420,8 @@
       }
 
       if (view === 'lookup') {
-        const phoneOk = isValidPhone(lookupPhone);
-        const myBookings = phoneOk ? bookings.filter(b => b.userPhone === lookupPhone).sort((a, b) => new Date(b.date) - new Date(a.date) || new Date(b.createdAt) - new Date(a.createdAt)) : [];
+        const lookupReady = isValidPhone(lookupPhone) && isValidTransferCode(lookupCode);
+        const myBookings = lookupReady ? bookings.filter(b => b.userPhone === lookupPhone && b.transferCode === lookupCode).sort((a, b) => new Date(b.date) - new Date(a.date) || new Date(b.createdAt) - new Date(a.createdAt)) : [];
 
         return (
           <div className="min-h-screen">
@@ -424,15 +437,21 @@
             <main className="max-w-2xl mx-auto p-4 sm:p-6 pb-24">
               <div className="text-center mb-6 mt-4">
                 <h2 className="text-3xl font-extrabold text-white mb-2 tracking-wide">查詢我的預約</h2>
-                <p className="text-blue-300 text-sm">輸入預約時留下的手機號碼。</p>
+                <p className="text-blue-300 text-sm">輸入預約時留下的手機號碼與匯款後五碼。</p>
               </div>
 
-              <div className="bg-blue-950/60 border border-blue-800 rounded-2xl p-4 mb-6">
+              <div className="bg-blue-950/60 border border-blue-800 rounded-2xl p-4 mb-6 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
                 <label htmlFor="lookup-phone" className="block text-sm font-medium text-blue-200 mb-1.5 flex items-center"><i className="fas fa-phone mr-1 text-[16px]"></i> 手機號碼</label>
                 <input id="lookup-phone" type="tel" inputMode="numeric" placeholder="09xxxxxxxx" value={lookupPhone} onChange={e => setLookupPhone(e.target.value.replace(/\D/g, '').slice(0, 10))} className="w-full bg-blue-900 border border-blue-700 rounded-xl p-3.5 text-white font-mono text-lg focus:outline-none focus:border-yellow-400 transition-all placeholder-blue-500" />
+                </div>
+                <div>
+                  <label htmlFor="lookup-code" className="block text-sm font-medium text-blue-200 mb-1.5 flex items-center"><i className="fas fa-money-bill-wave mr-1 text-[16px]"></i> 匯款後五碼</label>
+                  <input id="lookup-code" type="text" inputMode="numeric" placeholder="5 位數字" value={lookupCode} onChange={e => setLookupCode(e.target.value.replace(/\D/g, '').slice(0, 5))} className="w-full bg-blue-900 border border-blue-700 rounded-xl p-3.5 text-white font-mono text-lg tracking-widest focus:outline-none focus:border-yellow-400 transition-all placeholder-blue-500 placeholder:tracking-normal" />
+                </div>
               </div>
 
-              {phoneOk && (
+              {lookupReady && (
                 <div className="mb-4 flex items-center justify-between">
                   <h3 className="text-xl font-bold text-yellow-400 flex items-center"><i className="fas fa-history mr-2"></i> 預約紀錄</h3>
                   <span className="bg-blue-800 text-blue-200 text-xs px-2 py-1 rounded-full font-bold">共 {myBookings.length} 筆</span>
@@ -440,12 +459,12 @@
               )}
 
               <div className="space-y-4">
-                {!phoneOk ? (
-                  <p className="text-blue-400 text-sm text-center">請輸入完整 10 碼手機號碼</p>
+                {!lookupReady ? (
+                  <p className="text-blue-400 text-sm text-center">請輸入 10 碼手機號碼與 5 碼匯款後五碼</p>
                 ) : myBookings.length === 0 ? (
                   <div className="bg-blue-950/60 border border-blue-800 rounded-2xl p-8 text-center backdrop-blur-sm">
                     <i className="fas fa-calendar-day mx-auto text-blue-700 mb-4 text-[48px] block text-center"></i>
-                    <p className="text-blue-300 font-medium">這支電話目前沒有預約紀錄。</p>
+                    <p className="text-blue-300 font-medium">找不到符合的預約，請確認手機號碼與匯款後五碼。</p>
                   </div>
                 ) : myBookings.map(bookingCard)}
               </div>
@@ -496,6 +515,23 @@
 
         const pendingCount = bookings.filter(b => !b.isConfirmed).length;
 
+        // 客人名單：依電話整理臨打預約（週期預約為後台建立，不列入）
+        const customerMap = {};
+        bookings.forEach(b => {
+          if (b.isBulk || !isValidPhone(b.userPhone || '')) return;
+          if (!customerMap[b.userPhone]) customerMap[b.userPhone] = { phone: b.userPhone, bookings: [] };
+          customerMap[b.userPhone].bookings.push(b);
+        });
+        const customers = Object.values(customerMap).map(c => {
+          const byDate = [...c.bookings].sort((a, b) => b.date.localeCompare(a.date) || new Date(b.createdAt) - new Date(a.createdAt));
+          return { ...c, bookings: byDate, name: byDate[0].name, lastDate: byDate[0].date, noShows: c.bookings.filter(b => b.noShow).length };
+        });
+        const noShowsByPhone = Object.fromEntries(customers.map(c => [c.phone, c.noShows]));
+        const term = customerSearch.trim().toLowerCase();
+        const filteredCustomers = customers
+          .filter(c => !term || c.name.toLowerCase().includes(term) || c.phone.includes(term))
+          .sort((a, b) => b.bookings.length - a.bookings.length || b.lastDate.localeCompare(a.lastDate));
+
         const year = calendarDate.getFullYear();
         const month = calendarDate.getMonth();
         const daysInMonth = getDaysInMonth(year, month);
@@ -529,6 +565,9 @@
                     <button onClick={() => setAdminTab('calendar')} className={`flex-1 sm:flex-none flex items-center justify-center px-4 py-2 rounded-md text-sm font-bold transition-all whitespace-nowrap ${adminTab === 'calendar' ? 'bg-yellow-500 text-blue-950 shadow' : 'text-blue-300 hover:text-white'}`}>
                       <i className="fas fa-calendar-day text-[16px] mr-2"></i> 檔期表
                     </button>
+                    <button onClick={() => setAdminTab('customers')} className={`flex-1 sm:flex-none flex items-center justify-center px-4 py-2 rounded-md text-sm font-bold transition-all whitespace-nowrap ${adminTab === 'customers' ? 'bg-yellow-500 text-blue-950 shadow' : 'text-blue-300 hover:text-white'}`}>
+                      <i className="fas fa-users text-[16px] mr-2"></i> 客人名單
+                    </button>
                     {currentAdmin?.role === 'main' && (
                       <button onClick={() => setAdminTab('openplay')} className={`flex-1 sm:flex-none flex items-center justify-center px-4 py-2 rounded-md text-sm font-bold transition-all whitespace-nowrap ${adminTab === 'openplay' ? 'bg-yellow-500 text-blue-950 shadow' : 'text-blue-300 hover:text-white'}`}>
                         <BadmintonIcon className="text-[16px] mr-2" /> 暢打管理
@@ -541,7 +580,7 @@
                     )}
                   </div>
 
-                  {currentAdmin?.role === 'main' && adminTab !== 'settings' && adminTab !== 'openplay' && (
+                  {currentAdmin?.role === 'main' && adminTab !== 'settings' && adminTab !== 'openplay' && adminTab !== 'customers' && (
                     <button onClick={() => setShowBulkModal(true)} className="flex-1 sm:flex-none flex items-center justify-center px-4 py-2.5 bg-yellow-500 text-blue-950 font-bold rounded-lg hover:bg-yellow-400 transition-colors shadow-lg">
                       <i className="fas fa-plus-circle text-[18px] mr-1"></i> 週期預約
                     </button>
@@ -607,7 +646,10 @@
                                 </div>
                               </td>
                               <td className="p-4 text-blue-200">第 <span className="text-white font-bold">{Array.isArray(b.court) ? b.court.join(', ') : b.court}</span> 場地</td>
-                              <td className="p-4 font-medium">{b.name}</td>
+                              <td className="p-4 font-medium">
+                                {b.name}
+                                {noShowsByPhone[b.userPhone] > 0 && <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-900 text-red-300 border border-red-700 whitespace-nowrap" title="此電話的爽約紀錄">爽約 {noShowsByPhone[b.userPhone]} 次</span>}
+                              </td>
                               <td className="p-4 font-mono text-blue-300">{b.userPhone || '無'}</td>
                               <td className="p-4 text-center">
                                 {b.transferCode ? (
@@ -622,6 +664,78 @@
                             </tr>
                           ))
                         )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {/* 後台 - 客人名單 */}
+              {adminTab === 'customers' && (
+                <div className="bg-blue-950 rounded-2xl border border-blue-800 overflow-hidden shadow-2xl">
+                  <div className="p-4 border-b border-blue-800 bg-blue-900/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="relative w-full max-w-sm">
+                      <i className="fas fa-search absolute left-3 top-3 text-blue-400"></i>
+                      <input id="customer-search" type="text" placeholder="輸入姓名或手機號碼搜尋..." value={customerSearch} onChange={e => setCustomerSearch(e.target.value)} className="w-full bg-blue-950 border border-blue-700 rounded-lg pl-10 pr-4 py-2 text-white focus:border-yellow-400 focus:outline-none placeholder-blue-600" />
+                    </div>
+                    <p className="text-xs text-blue-300">共 {customers.length} 位客人 · 點一列查看預約並標記爽約</p>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm text-blue-100 min-w-[720px]">
+                      <thead className="bg-blue-900 text-yellow-500 font-semibold border-b-2 border-blue-800">
+                        <tr>
+                          <th className="p-4 whitespace-nowrap">姓名</th>
+                          <th className="p-4 whitespace-nowrap">手機號碼</th>
+                          <th className="p-4 text-center whitespace-nowrap">預約次數</th>
+                          <th className="p-4 whitespace-nowrap">最近預約日期</th>
+                          <th className="p-4 text-center whitespace-nowrap">爽約</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-blue-800/50">
+                        {filteredCustomers.length === 0 ? (
+                          <tr><td colSpan="5" className="p-12 text-center text-blue-400 text-lg">{customers.length === 0 ? '還沒有客人預約過' : '找不到符合的客人'}</td></tr>
+                        ) : filteredCustomers.map(c => (
+                          <React.Fragment key={c.phone}>
+                            <tr onClick={() => setExpandedPhone(expandedPhone === c.phone ? null : c.phone)} className={`cursor-pointer transition-colors ${expandedPhone === c.phone ? 'bg-blue-900/60' : 'hover:bg-blue-900/40'}`}>
+                              <td className="p-4 font-bold text-white">{expandedPhone === c.phone ? <i className="fas fa-chevron-down mr-2 text-blue-400 text-[12px]"></i> : <i className="fas fa-chevron-right mr-2 text-blue-400 text-[12px]"></i>}{c.name}</td>
+                              <td className="p-4 font-mono text-blue-200">{c.phone}</td>
+                              <td className="p-4 text-center"><span className="bg-blue-800 text-yellow-400 px-3 py-1 rounded-full font-bold text-xs">{c.bookings.length} 次</span></td>
+                              <td className="p-4 text-blue-300">{c.lastDate}</td>
+                              <td className="p-4 text-center">
+                                {c.noShows > 0
+                                  ? <span className="px-2 py-1 rounded text-xs font-bold bg-red-900 text-red-300 border border-red-700">{c.noShows} 次</span>
+                                  : <span className="text-blue-600 text-xs">—</span>}
+                              </td>
+                            </tr>
+                            {expandedPhone === c.phone && (
+                              <tr className="bg-blue-900/30">
+                                <td colSpan="5" className="p-4">
+                                  <div className="space-y-2">
+                                    {c.bookings.map(b => {
+                                      const canMark = b.date <= todayString;
+                                      return (
+                                        <div key={b.id} className={`flex flex-wrap items-center justify-between gap-3 p-3 rounded-lg border ${b.noShow ? 'bg-red-950/40 border-red-800' : 'bg-blue-950/60 border-blue-800'}`}>
+                                          <div className="flex flex-wrap items-center gap-2">
+                                            <span className="font-medium text-white">{b.date}</span>
+                                            <span className="text-blue-300">第 {b.court.join(', ')} 場地</span>
+                                            {b.times.map(t => <span key={t} className="bg-blue-800 border border-blue-700 text-yellow-300 px-2 py-0.5 rounded text-xs whitespace-nowrap">{displayTime(t)}</span>)}
+                                            <span className={`text-xs font-bold ${b.isConfirmed ? 'text-green-400' : 'text-yellow-400'}`}>{b.isConfirmed ? '已確認' : '待確認'}</span>
+                                            <span className="text-xs font-mono text-blue-400">後五碼 {b.transferCode}</span>
+                                          </div>
+                                          {canMark ? (
+                                            <button onClick={() => toggleNoShow(b.id)} className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors ${b.noShow ? 'bg-red-500 border-red-400 text-white hover:bg-red-400' : 'bg-blue-900 border-blue-600 text-blue-200 hover:border-red-400 hover:text-red-300'}`}>
+                                              {b.noShow ? '已標記爽約（點此取消）' : '標記爽約'}
+                                            </button>
+                                          ) : <span className="text-xs text-blue-500">尚未到預約日</span>}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </React.Fragment>
+                        ))}
                       </tbody>
                     </table>
                   </div>
