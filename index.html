@@ -67,6 +67,7 @@
       const [lastBooking, setLastBooking] = useState(null);
       const [lookupPhone, setLookupPhone] = useState(() => loadContact().phone);
       const [lookupCode, setLookupCode] = useState(() => loadContact().code);
+      const [lookupName, setLookupName] = useState(() => loadContact().name);
       const [bookings, setBookings] = useState([]);
       const [openPlayOverrides, setOpenPlayOverrides] = useState({}); // { 'YYYY-MM-DD': ['1', '2'] }
 
@@ -88,6 +89,7 @@
       };
       const today = new Date();
       const todayString = getLocalDateString(today);
+      const [scheduleDate, setScheduleDate] = useState(todayString);
 
       useEffect(() => {
         const loadData = () => {
@@ -268,6 +270,7 @@
         saveContact({ name: newBooking.name, phone, code: newBooking.transferCode });
         setLookupPhone(phone);
         setLookupCode(newBooking.transferCode);
+        setLookupName(newBooking.name);
         setLastBooking(newBooking);
         setView('done');
       };
@@ -356,6 +359,26 @@
       const prevMonth = () => setCalendarDate(new Date(calendarDate.getFullYear(), calendarDate.getMonth() - 1, 1));
       const nextMonth = () => setCalendarDate(new Date(calendarDate.getFullYear(), calendarDate.getMonth() + 1, 1));
 
+      const siteHeader = (active) => (
+        <header className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 p-4 sm:px-6 bg-blue-950/80 backdrop-blur-md sticky top-0 z-10 border-b border-blue-800">
+          <h1 className="text-xl font-bold text-yellow-400 flex items-center tracking-wide">
+            冠軍羽球館 <span className="text-sm font-normal text-blue-200 ml-2">（國光店）</span>
+          </h1>
+          <nav className="grid grid-cols-4 sm:flex sm:items-center gap-2">
+            <button onClick={() => setView('schedule')} className={`flex items-center justify-center gap-1.5 text-xs font-medium px-3 py-2 sm:py-1.5 rounded-full border transition-colors whitespace-nowrap ${active === 'schedule' ? 'bg-yellow-500 border-yellow-400 text-blue-950 font-bold' : 'border-blue-600 bg-blue-800 text-white hover:bg-blue-700'}`}>
+              <i className="fas fa-calendar-alt text-[14px]"></i> 場地狀況
+            </button>
+            <button onClick={startBooking} className={`flex items-center justify-center gap-1.5 text-xs font-medium px-3 py-2 sm:py-1.5 rounded-full border transition-colors whitespace-nowrap ${active === 'booking' ? 'bg-yellow-500 border-yellow-400 text-blue-950 font-bold' : 'border-blue-600 bg-blue-800 text-white hover:bg-blue-700'}`}>
+              <i className="fas fa-calendar-day text-[14px]"></i> 預約場地
+            </button>
+            <button onClick={() => setView('lookup')} className={`flex items-center justify-center gap-1.5 text-xs font-medium px-3 py-2 sm:py-1.5 rounded-full border transition-colors whitespace-nowrap ${active === 'lookup' ? 'bg-yellow-500 border-yellow-400 text-blue-950 font-bold' : 'border-blue-600 bg-blue-800 text-white hover:bg-blue-700'}`}>
+              <i className="fas fa-search text-[14px]"></i> 查詢預約
+            </button>
+            <button onClick={() => setView('admin-login')} className="text-xs font-medium px-3 py-2 sm:py-1.5 rounded-full border border-blue-700 text-blue-300 hover:text-white hover:bg-blue-800 transition-colors whitespace-nowrap">後台</button>
+          </nav>
+        </header>
+      );
+
       const bookingCard = (b) => (
         <div key={b.id} className="bg-blue-950 border border-blue-700 rounded-2xl p-5 shadow-lg relative overflow-hidden">
           <div className={`absolute top-0 right-0 px-3 py-1 text-xs font-bold rounded-bl-xl ${b.isConfirmed ? 'bg-green-500 text-white' : 'bg-yellow-500 text-blue-950'}`}>
@@ -379,14 +402,7 @@
       if (view === 'done' && lastBooking) {
         return (
           <div className="min-h-screen">
-            <header className="flex justify-between items-center p-4 sm:px-6 bg-blue-950/80 backdrop-blur-md sticky top-0 z-10 border-b border-blue-800">
-              <h1 className="text-xl font-bold text-yellow-400 flex items-center tracking-wide">
-                冠軍羽球館 <span className="text-sm font-normal text-blue-200 ml-2 hidden sm:inline">（國光店）</span>
-              </h1>
-              <button onClick={startBooking} className="flex items-center text-xs font-medium px-4 py-1.5 rounded-full border border-blue-500 bg-blue-800 text-white hover:bg-blue-700 transition-colors shadow-sm">
-                <i className="fas fa-calendar-day mr-1.5 text-[14px]"></i> 預約場地
-              </button>
-            </header>
+            {siteHeader('done')}
 
             <main className="max-w-lg mx-auto p-4 sm:p-6 pb-24">
               <div className="text-center mt-6 mb-6">
@@ -420,28 +436,133 @@
         );
       }
 
-      if (view === 'lookup') {
-        const lookupReady = isValidPhone(lookupPhone) && isValidTransferCode(lookupCode);
-        const myBookings = lookupReady ? bookings.filter(b => b.userPhone === lookupPhone && b.transferCode === lookupCode).sort((a, b) => new Date(b.date) - new Date(a.date) || new Date(b.createdAt) - new Date(a.createdAt)) : [];
+      if (view === 'schedule') {
+        // 與臨打預約相同範圍：今天起到 7 天後
+        const days = [];
+        for (let i = 0; i <= 7; i++) {
+          const d = new Date(today);
+          d.setDate(d.getDate() + i);
+          days.push(getLocalDateString(d));
+        }
+        const weekdayNames = ['日', '一', '二', '三', '四', '五', '六'];
+        const weekdayOf = (dateStr) => weekdayNames[new Date(dateStr).getDay()];
+        const shownDate = days.includes(scheduleDate) ? scheduleDate : days[0];
+
+        // 只顯示空位 / 已預約 / 暢打，不透露預約人資料
+        const slotState = (dateStr, slot, courtStr) => {
+          if (slot.isPast) return 'past';
+          if (isCourtBlockedByOpenPlay(dateStr, slot.value, courtStr)) return 'openplay';
+          const taken = bookings.some(b => {
+            const courtArray = Array.isArray(b.court) ? b.court : [b.court];
+            return b.date === dateStr && b.times.includes(slot.value) && courtArray.includes(courtStr);
+          });
+          return taken ? 'booked' : 'free';
+        };
+        const freeCount = (dateStr) => getAvailableTimes(dateStr).reduce((n, slot) => n + ['1', '2', '3', '4'].filter(c => slotState(dateStr, slot, c) === 'free').length, 0);
+        const bookSlot = (dateStr, time, courtStr) => {
+          setBookingData({ ...emptyBooking(), date: dateStr, times: [time], court: [courtStr] });
+          setStep(3);
+          setView('booking');
+        };
+        const slots = getAvailableTimes(shownDate);
 
         return (
           <div className="min-h-screen">
-            <header className="flex justify-between items-center p-4 sm:px-6 bg-blue-950/80 backdrop-blur-md sticky top-0 z-10 border-b border-blue-800">
-              <h1 className="text-xl font-bold text-yellow-400 flex items-center tracking-wide">
-                冠軍羽球館 <span className="text-sm font-normal text-blue-200 ml-2 hidden sm:inline">（國光店）</span>
-              </h1>
-              <button onClick={startBooking} className="flex items-center text-xs font-medium px-4 py-1.5 rounded-full border border-blue-500 bg-blue-800 text-white hover:bg-blue-700 transition-colors shadow-sm">
-                <i className="fas fa-calendar-day mr-1.5 text-[14px]"></i> 預約場地
-              </button>
-            </header>
+            {siteHeader('schedule')}
+
+            <main className="max-w-3xl mx-auto p-4 sm:p-6 pb-24">
+              <div className="text-center mb-6 mt-4">
+                <h2 className="text-3xl font-extrabold text-white mb-2 tracking-wide">一週場地狀況</h2>
+                <p className="text-blue-300 text-sm">今天起 7 天內的空位，點「空位」即可直接預約。</p>
+              </div>
+
+              <div className="flex gap-2 overflow-x-auto custom-scrollbar pb-2 mb-4" role="tablist" aria-label="選擇日期">
+                {days.map(d => {
+                  const selected = d === shownDate;
+                  const free = freeCount(d);
+                  const day = new Date(d).getDay();
+                  const weekend = day === 0 || day === 6;
+                  return (
+                    <button key={d} role="tab" aria-selected={selected} onClick={() => setScheduleDate(d)} className={`flex-shrink-0 w-[4.5rem] flex flex-col items-center py-2 rounded-xl border-2 transition-all ${selected ? 'bg-yellow-500 border-yellow-400 text-blue-950 shadow-md' : 'bg-blue-900/60 border-blue-700 text-white hover:border-yellow-400'}`}>
+                      <span className={`text-xs font-bold ${selected ? '' : weekend ? 'text-yellow-400' : 'text-blue-300'}`}>{d === todayString ? '今天' : `週${weekdayOf(d)}`}</span>
+                      <span className="text-lg font-extrabold leading-tight">{parseInt(d.slice(5, 7), 10)}/{parseInt(d.slice(8), 10)}</span>
+                      <span className={`text-[10px] font-bold ${selected ? 'text-blue-900' : free > 0 ? 'text-green-400' : 'text-red-400'}`}>{free > 0 ? `空位 ${free}` : '已滿'}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs font-medium mb-3">
+                <span className="flex items-center text-green-300"><span className="w-3 h-3 bg-green-900/50 border border-green-500 rounded mr-1"></span> 空位（可預約）</span>
+                <span className="flex items-center text-red-300"><span className="w-3 h-3 bg-red-950/60 border border-red-800 rounded mr-1"></span> 已預約</span>
+                <span className="flex items-center text-purple-300"><span className="w-3 h-3 bg-purple-900 border border-purple-500 rounded mr-1"></span> 暢打時段</span>
+                <span className="flex items-center text-blue-400"><span className="w-3 h-3 bg-blue-950 border border-blue-800 rounded mr-1"></span> 已過時段</span>
+              </div>
+
+              <div className="bg-blue-950 rounded-2xl border border-blue-800 shadow-2xl overflow-hidden">
+                <div className="p-3 border-b border-blue-800 bg-blue-900/40 text-sm font-bold text-yellow-400">
+                  {shownDate}（{weekdayOf(shownDate)}）
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-center border-collapse">
+                    <thead className="bg-blue-900">
+                      <tr>
+                        <th className="p-2 text-blue-300 text-xs font-bold border-b border-blue-700 w-[4.5rem]">時間</th>
+                        {[1, 2, 3, 4].map(c => <th key={c} className="p-2 text-yellow-500 text-xs font-bold border-b border-blue-700">第 {c} 場</th>)}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {slots.map(slot => (
+                        <tr key={slot.value} className="border-b border-blue-800/50">
+                          <td className="p-1.5 text-blue-200 text-xs font-medium whitespace-nowrap tabular-nums">{slot.value}<span className="hidden sm:inline">–{(parseInt(slot.value, 10) + 1).toString().padStart(2, '0')}:00</span></td>
+                          {['1', '2', '3', '4'].map(c => {
+                            const state = slotState(shownDate, slot, c);
+                            const label = { free: '空位', booked: '已預約', openplay: '暢打', past: '—' }[state];
+                            const cls = {
+                              free: 'bg-green-900/40 border-green-500/60 text-green-300 hover:bg-green-800/60 hover:border-green-400 cursor-pointer',
+                              booked: 'bg-red-950/60 border-red-800/70 text-red-300 cursor-not-allowed',
+                              openplay: 'bg-purple-900/40 border-purple-500/50 text-purple-300 cursor-not-allowed',
+                              past: 'bg-blue-950 border-blue-900 text-blue-700 cursor-not-allowed',
+                            }[state];
+                            return (
+                              <td key={c} className="p-1">
+                                <button type="button" disabled={state !== 'free'} onClick={() => bookSlot(shownDate, slot.value, c)} aria-label={`${shownDate} ${displayTime(slot.value)} 第 ${c} 場地：${label}`} className={`w-full h-10 rounded-lg border text-xs font-bold transition-colors ${cls}`}>
+                                  {label}
+                                </button>
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <p className="text-xs text-blue-400 mt-3">平日 9:00～22:00、週末 7:00～22:00 開放；「暢打」為保留給現場暢打的場地，無法線上預約。</p>
+            </main>
+          </div>
+        );
+      }
+
+      if (view === 'lookup') {
+        const lookupReady = lookupName.trim() !== '' && isValidPhone(lookupPhone) && isValidTransferCode(lookupCode);
+        const myBookings = lookupReady ? bookings.filter(b => b.name.trim() === lookupName.trim() && b.userPhone === lookupPhone && b.transferCode === lookupCode).sort((a, b) => new Date(b.date) - new Date(a.date) || new Date(b.createdAt) - new Date(a.createdAt)) : [];
+
+        return (
+          <div className="min-h-screen">
+            {siteHeader('lookup')}
 
             <main className="max-w-2xl mx-auto p-4 sm:p-6 pb-24">
               <div className="text-center mb-6 mt-4">
                 <h2 className="text-3xl font-extrabold text-white mb-2 tracking-wide">查詢我的預約</h2>
-                <p className="text-blue-300 text-sm">輸入預約時留下的手機號碼與匯款後五碼。</p>
+                <p className="text-blue-300 text-sm">輸入預約時留下的姓名、手機號碼與匯款後五碼。</p>
               </div>
 
-              <div className="bg-blue-950/60 border border-blue-800 rounded-2xl p-4 mb-6 grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="bg-blue-950/60 border border-blue-800 rounded-2xl p-4 mb-6 grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div>
+                  <label htmlFor="lookup-name" className="block text-sm font-medium text-blue-200 mb-1.5 flex items-center"><i className="fas fa-user mr-1 text-[16px]"></i> 姓名</label>
+                  <input id="lookup-name" type="text" autoComplete="name" placeholder="預約時填的姓名" value={lookupName} onChange={e => setLookupName(e.target.value)} className="w-full bg-blue-900 border border-blue-700 rounded-xl p-3.5 text-white text-lg focus:outline-none focus:border-yellow-400 transition-all placeholder-blue-500 placeholder:text-base" />
+                </div>
                 <div>
                 <label htmlFor="lookup-phone" className="block text-sm font-medium text-blue-200 mb-1.5 flex items-center"><i className="fas fa-phone mr-1 text-[16px]"></i> 手機號碼</label>
                 <input id="lookup-phone" type="tel" inputMode="numeric" placeholder="09xxxxxxxx" value={lookupPhone} onChange={e => setLookupPhone(e.target.value.replace(/\D/g, '').slice(0, 10))} className="w-full bg-blue-900 border border-blue-700 rounded-xl p-3.5 text-white font-mono text-lg focus:outline-none focus:border-yellow-400 transition-all placeholder-blue-500" />
@@ -461,11 +582,11 @@
 
               <div className="space-y-4">
                 {!lookupReady ? (
-                  <p className="text-blue-400 text-sm text-center">請輸入 10 碼手機號碼與 5 碼匯款後五碼</p>
+                  <p className="text-blue-400 text-sm text-center">請填寫姓名、10 碼手機號碼與 5 碼匯款後五碼</p>
                 ) : myBookings.length === 0 ? (
                   <div className="bg-blue-950/60 border border-blue-800 rounded-2xl p-8 text-center backdrop-blur-sm">
                     <i className="fas fa-calendar-day mx-auto text-blue-700 mb-4 text-[48px] block text-center"></i>
-                    <p className="text-blue-300 font-medium">找不到符合的預約，請確認手機號碼與匯款後五碼。</p>
+                    <p className="text-blue-300 font-medium">找不到符合的預約，請確認姓名、手機號碼與匯款後五碼都和預約時相同。</p>
                   </div>
                 ) : myBookings.map(bookingCard)}
               </div>
@@ -1062,17 +1183,7 @@
 
       return (
         <div className="min-h-screen bg-blue-900 font-sans selection:bg-yellow-500 selection:text-blue-900">
-          <header className="flex justify-between items-center p-4 sm:px-6 bg-blue-950/80 backdrop-blur-md sticky top-0 z-10 border-b border-blue-800">
-            <h1 className="text-xl font-bold text-yellow-400 flex items-center tracking-wide">
-              冠軍羽球館 <span className="text-sm font-normal text-blue-200 ml-2 hidden sm:inline">（國光店）</span>
-            </h1>
-            <div className="flex items-center gap-2">
-              <button onClick={() => setView('lookup')} className="flex items-center text-xs font-medium px-4 py-1.5 rounded-full border border-blue-500 bg-blue-800 text-white hover:bg-blue-700 transition-colors shadow-sm">
-                <i className="fas fa-search mr-1.5 text-[14px]"></i> 查詢預約
-              </button>
-              <button onClick={() => setView('admin-login')} className="text-xs font-medium px-3 py-1.5 rounded-full border border-blue-700 text-blue-300 hover:text-white hover:bg-blue-800 transition-colors">後台</button>
-            </div>
-          </header>
+          {siteHeader('booking')}
 
           <main className="max-w-lg mx-auto p-4 sm:p-6 pb-24">
             <div>
@@ -1112,6 +1223,9 @@
                       • 週六、周日：7:00～22:00
                     </p>
                   </div>
+                  <button type="button" onClick={() => setView('schedule')} className="w-full flex items-center justify-center gap-2 py-3 rounded-xl border border-blue-600 text-blue-100 font-bold hover:bg-blue-800 transition-colors">
+                    <i className="fas fa-calendar-alt text-[16px]"></i> 先看一週場地狀況
+                  </button>
                 </div>
               )}
 
