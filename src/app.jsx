@@ -7,7 +7,19 @@ const RESET_LINK_EXPIRED = window.location.hash.includes('error_code=');
 // Supabase 連線設定（publishable key 本來就是放在網頁裡公開使用的金鑰）
 const SUPABASE_URL = 'https://xqwrpedqgndhgkoxvziq.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_j_inm_0LgaLkZULSkHx9Kg_odk2hljY';
-const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY); // 管理員登入用
+
+// 客人不用登入：另開一個不保存登入狀態的連線。
+// 手機從銀行 App 切回來時，登入用的連線會先做檢查，客人的預約不必排隊等它。
+const publicDb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
+  auth: {
+    persistSession: false,
+    autoRefreshToken: false,
+    detectSessionInUrl: false,
+    storageKey: 'champion-public',
+    lock: (name, acquireTimeout, fn) => fn(),
+  },
+});
 
 // 資料庫回傳的錯誤代碼（見 supabase/schema.sql）對應的提示文字
 const ERROR_MESSAGES = {
@@ -145,8 +157,8 @@ function App() {
 
   const loadPublic = async () => {
     const [slotRes, opRes] = await Promise.all([
-      fetchAll(() => db.from('booking_slots').select('date, time, court').gte('date', todayString).lte('date', maxDateString)),
-      fetchAll(() => db.from('open_play_overrides').select('date, courts')),
+      fetchAll(() => publicDb.from('booking_slots').select('date, time, court').gte('date', todayString).lte('date', maxDateString)),
+      fetchAll(() => publicDb.from('open_play_overrides').select('date, courts')),
     ]);
     if (slotRes.error || opRes.error) {
       setLoadError('無法連線到預約系統，請檢查網路後重新整理頁面。');
@@ -157,7 +169,7 @@ function App() {
     setOpenPlayOverrides(Object.fromEntries(opRes.data.map(r => [r.date, r.courts])));
     setDataLoaded(true);
     // 店家資訊讀不到時沿用預設值，不影響預約
-    const { data: shopRow } = await db.from('shop_settings').select('*').eq('id', 1).maybeSingle();
+    const { data: shopRow } = await publicDb.from('shop_settings').select('*').eq('id', 1).maybeSingle();
     if (shopRow) setShop(shopFromRow(shopRow));
   };
 
@@ -213,13 +225,17 @@ function App() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'shop_settings' }, refreshSoon)
       .subscribe();
     const poll = setInterval(refreshSoon, 60000);
+    // 手機切到其他 App 再回來時，連線多半已被系統切斷：馬上重新連線並更新場地資料
+    const onVisible = () => { if (document.visibilityState === 'visible') refreshSoon(); };
     window.addEventListener('focus', refreshSoon);
+    document.addEventListener('visibilitychange', onVisible);
     return () => {
       authSub.subscription.unsubscribe();
       db.removeChannel(channel);
       clearInterval(poll);
       clearTimeout(timer);
       window.removeEventListener('focus', refreshSoon);
+      document.removeEventListener('visibilitychange', onVisible);
     };
   }, []);
 
@@ -347,7 +363,7 @@ function App() {
 
   const handleSubmit = async () => {
     setSubmitting(true);
-    const { data, error } = await db.rpc('create_booking', {
+    const { data, error } = await publicDb.rpc('create_booking', {
       p_date: bookingData.date,
       p_times: bookingData.times,
       p_courts: bookingData.court,
@@ -380,7 +396,7 @@ function App() {
     if (e) e.preventDefault();
     if (!lookupReady) return;
     setLookupBusy(true);
-    const { data, error } = await db.rpc('lookup_bookings', { p_name: lookupName.trim(), p_phone: lookupPhone, p_code: lookupCode });
+    const { data, error } = await publicDb.rpc('lookup_bookings', { p_name: lookupName.trim(), p_phone: lookupPhone, p_code: lookupCode });
     setLookupBusy(false);
     if (error) {
       setLookupResults(null);
@@ -393,6 +409,10 @@ function App() {
   useEffect(() => {
     if (view === 'lookup' && lookupReady && lookupResults === null) runLookup();
   }, [view]);
+  // 進入最後一步就先連線並更新場地資料，按送出時不用從頭建立連線
+  useEffect(() => {
+    if (view === 'booking' && step === 4) loadPublic();
+  }, [view, step]);
 
   const handleAdminLogin = async (e) => {
     e.preventDefault();
