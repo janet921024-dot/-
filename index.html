@@ -3,15 +3,18 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>冠軍羽球館預約系統 - 旗艦版</title>
+  <title>冠軍羽球館預約系統</title>
 
   <!-- 載入 React 與 Babel -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js" crossorigin></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.22.17/babel.min.js"></script>
 
+  <!-- 載入 Supabase（線上資料庫） -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.49.4/dist/umd/supabase.js"></script>
+
   <!-- 載入 Tailwind CSS -->
-  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
 
   <!-- 載入 FontAwesome 圖示庫 -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
@@ -29,7 +32,52 @@
   <div id="root"></div>
 
   <script type="text/babel">
-    const { useState, useEffect } = React;
+    const { useState, useEffect, useRef } = React;
+
+    // 從重設密碼信的連結回來時，網址會帶 type=recovery；連結失效則帶 error_code
+    const OPENED_FROM_RESET_LINK = window.location.hash.includes('type=recovery');
+    const RESET_LINK_EXPIRED = window.location.hash.includes('error_code=');
+
+    // Supabase 連線設定（publishable key 本來就是放在網頁裡公開使用的金鑰）
+    const SUPABASE_URL = 'https://xqwrpedqgndhgkoxvziq.supabase.co';
+    const SUPABASE_KEY = 'sb_publishable_j_inm_0LgaLkZULSkHx9Kg_odk2hljY';
+    const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+    // 資料庫回傳的錯誤代碼（見 supabase/schema.sql）對應的提示文字
+    const ERROR_MESSAGES = {
+      SLOT_TAKEN: '你選的時段或場地剛剛被別人訂走了，請重新選擇。',
+      OPEN_PLAY: '你選的場地在該時段保留給暢打，請改選其他場地。',
+      INVALID_DATE: '只能預約今天起 7 天內的日期。',
+      INVALID_SLOT: '選擇的時段或場地無法預約，請重新選擇。',
+      INVALID_NAME: '請填寫姓名（30 字以內）。',
+      INVALID_PHONE: '請輸入 09 開頭的 10 碼手機號碼。',
+      INVALID_CODE: '請輸入 5 位數的匯款後五碼。',
+      NOT_ALLOWED: '只有主管理員可以執行這個操作。',
+      USER_NOT_FOUND: '找不到這個 Email 的帳號，請先在 Supabase 後台建立帳號。',
+      ALREADY_ADMIN: '這個帳號已經是管理員了。',
+    };
+    const errorText = (error) => {
+      const code = Object.keys(ERROR_MESSAGES).find(k => (error?.message || '').includes(k));
+      return code ? ERROR_MESSAGES[code] : '連線發生問題，請稍後再試。';
+    };
+
+    // 資料庫欄位（底線命名）轉成畫面用的欄位
+    const fromRow = (r) => ({
+      id: r.id, date: r.date, times: r.times, court: r.court, name: r.name,
+      userPhone: r.user_phone, transferCode: r.transfer_code,
+      isConfirmed: r.is_confirmed, isBulk: r.is_bulk, noShow: r.no_show, createdAt: r.created_at,
+    });
+
+    // Supabase 每次最多回傳 1000 筆，分頁讀完
+    const fetchAll = async (makeQuery) => {
+      let rows = [];
+      for (let from = 0; ; from += 1000) {
+        const { data, error } = await makeQuery().range(from, from + 999);
+        if (error) return { error };
+        rows = rows.concat(data);
+        if (data.length < 1000) return { data: rows };
+      }
+    };
 
     // 自訂羽毛球圖示元件
     const BadmintonIcon = ({ className }) => (
@@ -45,7 +93,7 @@
     );
 
     function App() {
-      const [view, setView] = useState('booking'); // 'booking', 'done', 'lookup', 'admin-login', 'admin-panel'
+      const [view, setView] = useState(OPENED_FROM_RESET_LINK ? 'reset-password' : RESET_LINK_EXPIRED ? 'admin-login' : 'booking'); // 'booking', 'done', 'schedule', 'lookup', 'admin-login', 'admin-panel', 'reset-password'
 
       const [step, setStep] = useState(1);
 
@@ -68,20 +116,39 @@
       const [lookupPhone, setLookupPhone] = useState(() => loadContact().phone);
       const [lookupCode, setLookupCode] = useState(() => loadContact().code);
       const [lookupName, setLookupName] = useState(() => loadContact().name);
-      const [bookings, setBookings] = useState([]);
+      const [lookupResults, setLookupResults] = useState(null); // null = 尚未查詢
+      const [lookupBusy, setLookupBusy] = useState(false);
+      const [slots, setSlots] = useState([]); // 公開的場地佔用格 { date, time, court }
+      const [adminBookings, setAdminBookings] = useState([]); // 管理員才讀得到的完整預約
       const [openPlayOverrides, setOpenPlayOverrides] = useState({}); // { 'YYYY-MM-DD': ['1', '2'] }
+      const [dataLoaded, setDataLoaded] = useState(false);
+      const [loadError, setLoadError] = useState('');
+      const [submitting, setSubmitting] = useState(false);
 
-      const [adminPasswordInput, setAdminPasswordInput] = useState('');
+      const [adminEmail, setAdminEmail] = useState('');
+      const [adminPassword, setAdminPassword] = useState('');
       const [loginError, setLoginError] = useState('');
-      const [showPwdHint, setShowPwdHint] = useState(false);
+      const [resetMode, setResetMode] = useState(false);
+      const [authNotice, setAuthNotice] = useState(RESET_LINK_EXPIRED ? '重設密碼的連結已失效或已使用過，請重新寄送。' : '');
+      const [authBusy, setAuthBusy] = useState(false);
+      const [newPassword, setNewPassword] = useState('');
+      const [newPassword2, setNewPassword2] = useState('');
+      const [pwdNotice, setPwdNotice] = useState('');
+      const [admins, setAdmins] = useState([]);
+      const [subEmail, setSubEmail] = useState('');
       const [adminTab, setAdminTab] = useState('list'); // 'list', 'calendar', 'customers', 'openplay', 'settings'
       const [listFilter, setListFilter] = useState('all');
       const [customerSearch, setCustomerSearch] = useState('');
       const [expandedPhone, setExpandedPhone] = useState(null);
 
-      // 管理員帳密狀態
-      const [adminAccounts, setAdminAccounts] = useState({ main: 'lu2588666', sub: 'sub123' });
-      const [currentAdmin, setCurrentAdmin] = useState(null); // { role: 'main' | 'sub' }
+      const [currentAdmin, setCurrentAdmin] = useState(null); // { role: 'main' | 'sub', email }
+      const adminRef = useRef(null);
+      adminRef.current = currentAdmin;
+
+      // 管理員看完整預約；客人只看得到哪幾格有人訂（不含姓名電話）
+      const bookings = currentAdmin
+        ? adminBookings
+        : slots.map((s, i) => ({ id: `slot-${i}`, date: s.date, times: [s.time], court: [s.court] }));
 
       const getLocalDateString = (dateObj) => {
         const offset = dateObj.getTimezoneOffset() * 60000;
@@ -91,47 +158,81 @@
       const todayString = getLocalDateString(today);
       const [scheduleDate, setScheduleDate] = useState(todayString);
 
+      const loadPublic = async () => {
+        const [slotRes, opRes] = await Promise.all([
+          fetchAll(() => db.from('booking_slots').select('date, time, court').gte('date', todayString).lte('date', maxDateString)),
+          fetchAll(() => db.from('open_play_overrides').select('date, courts')),
+        ]);
+        if (slotRes.error || opRes.error) {
+          setLoadError('無法連線到預約系統，請檢查網路後重新整理頁面。');
+          return;
+        }
+        setLoadError('');
+        setSlots(slotRes.data);
+        setOpenPlayOverrides(Object.fromEntries(opRes.data.map(r => [r.date, r.courts])));
+        setDataLoaded(true);
+      };
+
+      const loadAdmin = async () => {
+        const { data, error } = await fetchAll(() => db.from('bookings').select('*').order('date').order('id'));
+        if (!error) setAdminBookings(data.map(fromRow));
+      };
+
+      const refreshAll = () => {
+        loadPublic();
+        if (adminRef.current) loadAdmin();
+      };
+
+      // 確認登入的帳號是管理員，才進入後台
+      const enterAdmin = async (goToPanel) => {
+        const { data: role, error } = await db.rpc('admin_role');
+        if (error || !role) {
+          await db.auth.signOut();
+          return false;
+        }
+        const { data: { user } } = await db.auth.getUser();
+        const admin = { role, email: user?.email || '' };
+        adminRef.current = admin;
+        setCurrentAdmin(admin);
+        loadAdmin();
+        if (goToPanel) {
+          setView('admin-panel');
+          setAdminTab('list');
+        }
+        return true;
+      };
+
       useEffect(() => {
-        const loadData = () => {
-          try {
-            let localBookings = JSON.parse(localStorage.getItem('champion_bookings')) || [];
-            const localOverrides = JSON.parse(localStorage.getItem('champion_openplay')) || {};
-            const localAdmin = JSON.parse(localStorage.getItem('champion_admin')) || { main: 'lu2588666', sub: 'sub123' };
+        loadPublic();
+        // 這台裝置之前登入過後台就自動恢復管理員身分（從重設密碼連結回來時另外處理）
+        if (!OPENED_FROM_RESET_LINK) {
+          db.auth.getSession().then(({ data }) => { if (data.session) enterAdmin(false); });
+        }
+        const { data: authSub } = db.auth.onAuthStateChange((event) => {
+          if (event === 'PASSWORD_RECOVERY') setView('reset-password');
+        });
 
-            // 已改用匯款後五碼核對，清除舊版預約殘留的轉帳截圖以釋放儲存空間
-            let updated = false;
-            localBookings = localBookings.map(b => {
-              if ('screenshot' in b) {
-                updated = true;
-                const { screenshot, ...rest } = b;
-                return rest;
-              }
-              return b;
-            });
-            if (updated) localStorage.setItem('champion_bookings', JSON.stringify(localBookings));
-
-            setBookings(localBookings);
-            setOpenPlayOverrides(localOverrides);
-            setAdminAccounts(localAdmin);
-          } catch (e) {
-            console.error("資料讀取失敗", e);
-          }
+        // 有人預約、管理員修改時即時更新；另外每分鐘與切回頁面時再同步一次
+        let timer = null;
+        const refreshSoon = () => {
+          clearTimeout(timer);
+          timer = setTimeout(refreshAll, 300);
         };
-
-        loadData();
-
-        const handleStorageChange = (e) => {
-          if (e.key === 'champion_bookings') setBookings(JSON.parse(e.newValue) || []);
-          if (e.key === 'champion_openplay') setOpenPlayOverrides(JSON.parse(e.newValue) || {});
-          if (e.key === 'champion_admin') setAdminAccounts(JSON.parse(e.newValue) || { main: 'lu2588666', sub: 'sub123' });
+        const channel = db.channel('booking-changes')
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'booking_slots' }, refreshSoon)
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'bookings' }, refreshSoon)
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'open_play_overrides' }, refreshSoon)
+          .subscribe();
+        const poll = setInterval(refreshSoon, 60000);
+        window.addEventListener('focus', refreshSoon);
+        return () => {
+          authSub.subscription.unsubscribe();
+          db.removeChannel(channel);
+          clearInterval(poll);
+          clearTimeout(timer);
+          window.removeEventListener('focus', refreshSoon);
         };
-        window.addEventListener('storage', handleStorageChange);
-        return () => window.removeEventListener('storage', handleStorageChange);
       }, []);
-
-      const saveBookings = (newBookings) => { setBookings(newBookings); localStorage.setItem('champion_bookings', JSON.stringify(newBookings)); };
-      const saveOpenPlayOverrides = (newOverrides) => { setOpenPlayOverrides(newOverrides); localStorage.setItem('champion_openplay', JSON.stringify(newOverrides)); };
-      const saveAdminAccounts = (newAccts) => { setAdminAccounts(newAccts); localStorage.setItem('champion_admin', JSON.stringify(newAccts)); };
 
       const [showBulkModal, setShowBulkModal] = useState(false);
       const [bulkData, setBulkData] = useState({ name: '', startDate: '', weeks: 4, times: [], courts: [] });
@@ -255,65 +356,168 @@
         setView('booking');
       };
 
-      const handleSubmit = () => {
-        const { phone, ...rest } = bookingData;
-        const newBooking = {
-          id: Date.now(),
-          ...rest,
-          name: bookingData.name.trim(),
-          userPhone: phone,
-          isConfirmed: false,
-          isBulk: false,
-          createdAt: new Date().toISOString()
-        };
-        saveBookings([...bookings, newBooking]);
-        saveContact({ name: newBooking.name, phone, code: newBooking.transferCode });
-        setLookupPhone(phone);
+      const handleSubmit = async () => {
+        setSubmitting(true);
+        const { data, error } = await db.rpc('create_booking', {
+          p_date: bookingData.date,
+          p_times: bookingData.times,
+          p_courts: bookingData.court,
+          p_name: bookingData.name.trim(),
+          p_phone: bookingData.phone,
+          p_code: bookingData.transferCode,
+        });
+        setSubmitting(false);
+        refreshAll();
+        if (error) {
+          alert(errorText(error));
+          if (/SLOT_TAKEN|OPEN_PLAY|INVALID_SLOT/.test(error.message)) {
+            setBookingData({ ...bookingData, court: [] });
+            setStep(3);
+          }
+          return;
+        }
+        const newBooking = fromRow(data);
+        saveContact({ name: newBooking.name, phone: newBooking.userPhone, code: newBooking.transferCode });
+        setLookupPhone(newBooking.userPhone);
         setLookupCode(newBooking.transferCode);
         setLookupName(newBooking.name);
+        setLookupResults(null);
         setLastBooking(newBooking);
         setView('done');
       };
 
-      const handleAdminLogin = (e) => {
+      const lookupReady = lookupName.trim() !== '' && isValidPhone(lookupPhone) && isValidTransferCode(lookupCode);
+      const runLookup = async (e) => {
+        if (e) e.preventDefault();
+        if (!lookupReady) return;
+        setLookupBusy(true);
+        const { data, error } = await db.rpc('lookup_bookings', { p_name: lookupName.trim(), p_phone: lookupPhone, p_code: lookupCode });
+        setLookupBusy(false);
+        if (error) {
+          setLookupResults(null);
+          alert(errorText(error));
+          return;
+        }
+        setLookupResults(data.map(fromRow));
+      };
+      // 帶著上次的資料進入查詢頁時自動查一次
+      useEffect(() => {
+        if (view === 'lookup' && lookupReady && lookupResults === null) runLookup();
+      }, [view]);
+
+      const handleAdminLogin = async (e) => {
         e.preventDefault();
-        if (adminPasswordInput === adminAccounts.main) {
-          setCurrentAdmin({ role: 'main' });
-          setView('admin-panel');
-          setAdminTab('list');
-          setAdminPasswordInput('');
-          setLoginError('');
-        } else if (adminAccounts.sub && adminPasswordInput === adminAccounts.sub) {
-          setCurrentAdmin({ role: 'sub' });
-          setView('admin-panel');
-          setAdminTab('list');
-          setAdminPasswordInput('');
-          setLoginError('');
-        } else {
-          setLoginError('密碼錯誤，請重新輸入');
+        setAuthBusy(true);
+        setLoginError('');
+        const { error } = await db.auth.signInWithPassword({ email: adminEmail.trim(), password: adminPassword });
+        if (error) {
+          setAuthBusy(false);
+          setLoginError('Email 或密碼錯誤，請重新輸入');
+          return;
+        }
+        const ok = await enterAdmin(true);
+        setAuthBusy(false);
+        if (!ok) {
+          setLoginError('這個帳號沒有後台權限');
+          return;
+        }
+        setAdminPassword('');
+        setAuthNotice('');
+      };
+
+      const handleResetRequest = async (e) => {
+        e.preventDefault();
+        setAuthBusy(true);
+        const { error } = await db.auth.resetPasswordForEmail(adminEmail.trim(), { redirectTo: window.location.origin + window.location.pathname });
+        setAuthBusy(false);
+        if (error) {
+          setAuthNotice(error.status === 429 ? '寄送太頻繁，請過幾分鐘再試。' : '寄送失敗，請確認 Email 是否正確。');
+          return;
+        }
+        setAuthNotice('如果這個 Email 是管理員帳號，重設密碼信已寄出，請到信箱點連結設定新密碼。');
+      };
+
+      const handlePasswordUpdate = async (e) => {
+        e.preventDefault();
+        if (newPassword.length < 8) { setPwdNotice('新密碼至少要 8 碼'); return; }
+        if (newPassword !== newPassword2) { setPwdNotice('兩次輸入的新密碼不一樣'); return; }
+        setAuthBusy(true);
+        const { error } = await db.auth.updateUser({ password: newPassword });
+        setAuthBusy(false);
+        if (error) {
+          setPwdNotice(/different from the old/i.test(error.message) ? '新密碼不能和舊密碼相同' : '密碼更新失敗，請重新登入後再試');
+          return;
+        }
+        setNewPassword('');
+        setNewPassword2('');
+        setPwdNotice('密碼已更新，下次登入請用新密碼');
+        if (view === 'reset-password') {
+          window.history.replaceState(null, '', window.location.pathname);
+          const ok = await enterAdmin(true);
+          if (!ok) setView('admin-login');
         }
       };
 
-      const deleteBooking = (id) => {
+      const handleAdminLogout = async () => {
+        await db.auth.signOut();
+        adminRef.current = null;
+        setCurrentAdmin(null);
+        setAdminBookings([]);
+        setListFilter('all');
+        setView('booking');
+      };
+
+      const loadAdmins = async () => {
+        const { data, error } = await db.rpc('list_admins');
+        if (!error) setAdmins(data);
+      };
+
+      const grantSubAdmin = async (e) => {
+        e.preventDefault();
+        const { error } = await db.rpc('grant_sub_admin', { p_email: subEmail.trim() });
+        if (error) { alert(errorText(error)); return; }
+        setSubEmail('');
+        loadAdmins();
+      };
+
+      const revokeSubAdmin = async (email) => {
+        if (!window.confirm(`確定要移除 ${email} 的副管理員權限嗎？`)) return;
+        const { error } = await db.rpc('revoke_sub_admin', { p_email: email });
+        if (error) { alert(errorText(error)); return; }
+        loadAdmins();
+      };
+
+      const deleteBooking = async (id) => {
         if (currentAdmin?.role !== 'main') { alert('只有主管理員可以刪除預約！'); return; }
-        if (window.confirm('確定要刪除這筆預約嗎？刪除後該時段/場地將會釋出。')) {
-          saveBookings(bookings.filter(b => b.id !== id));
+        if (!window.confirm('確定要刪除這筆預約嗎？刪除後該時段/場地將會釋出。')) return;
+        const { error } = await db.from('bookings').delete().eq('id', id);
+        if (error) alert(errorText(error));
+        refreshAll();
+      };
+
+      // 先更新畫面再寫入資料庫，失敗就重新讀取
+      const updateBooking = async (id, changes, dbChanges) => {
+        setAdminBookings(prev => prev.map(b => b.id === id ? { ...b, ...changes } : b));
+        const { error } = await db.from('bookings').update(dbChanges).eq('id', id);
+        if (error) {
+          alert(errorText(error));
+          loadAdmin();
         }
       };
 
       const toggleConfirmStatus = (id) => {
         const targetBooking = bookings.find(b => b.id === id);
         if (!targetBooking) return;
-        saveBookings(bookings.map(b => b.id === id ? { ...b, isConfirmed: !targetBooking.isConfirmed } : b));
+        updateBooking(id, { isConfirmed: !targetBooking.isConfirmed }, { is_confirmed: !targetBooking.isConfirmed });
       };
 
       const toggleNoShow = (id) => {
         const targetBooking = bookings.find(b => b.id === id);
         if (!targetBooking) return;
-        saveBookings(bookings.map(b => b.id === id ? { ...b, noShow: !targetBooking.noShow } : b));
+        updateBooking(id, { noShow: !targetBooking.noShow }, { no_show: !targetBooking.noShow });
       };
 
-      const handleBulkSubmit = () => {
+      const handleBulkSubmit = async () => {
         if (currentAdmin?.role !== 'main') return;
         setBulkConflicts([]);
         if (!bulkData.name || !bulkData.startDate || bulkData.times.length === 0 || bulkData.courts.length === 0) {
@@ -340,15 +544,14 @@
         });
         if (conflicts.length > 0) { setBulkConflicts(conflicts); return; }
 
-        const newBookings = generatedDates.map((date, index) => ({
-          id: Date.now() + index, userPhone: '內部建立', date: date,
-          times: [...bulkData.times].sort((a, b) => parseInt(a) - parseInt(b)),
-          court: [...bulkData.courts].sort((a, b) => parseInt(a) - parseInt(b)),
-          name: bulkData.name, transferCode: null, isConfirmed: true, isBulk: true,
-          createdAt: new Date().toISOString()
-        }));
-
-        saveBookings([...bookings, ...newBookings]);
+        const { error } = await db.rpc('create_bulk_bookings', {
+          p_name: bulkData.name.trim(),
+          p_dates: generatedDates,
+          p_times: [...bulkData.times].sort((a, b) => parseInt(a) - parseInt(b)),
+          p_courts: [...bulkData.courts].sort((a, b) => parseInt(a) - parseInt(b)),
+        });
+        refreshAll();
+        if (error) { alert(errorText(error)); return; }
         alert(`成功建立 ${bulkData.weeks} 筆預約！`);
         setShowBulkModal(false);
         setBulkData({ name: '', startDate: '', weeks: 4, times: [], courts: [] });
@@ -360,7 +563,7 @@
       const nextMonth = () => setCalendarDate(new Date(calendarDate.getFullYear(), calendarDate.getMonth() + 1, 1));
 
       const siteHeader = (active) => (
-        <header className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3 p-4 sm:px-6 bg-blue-950/80 backdrop-blur-md sticky top-0 z-10 border-b border-blue-800">
+        <header className="flex flex-col sm:flex-row sm:flex-wrap sm:justify-between sm:items-center gap-3 p-4 sm:px-6 bg-blue-950/80 backdrop-blur-md sticky top-0 z-10 border-b border-blue-800">
           <h1 className="text-xl font-bold text-yellow-400 flex items-center tracking-wide">
             冠軍羽球館 <span className="text-sm font-normal text-blue-200 ml-2">（國光店）</span>
           </h1>
@@ -374,8 +577,13 @@
             <button onClick={() => setView('lookup')} className={`flex items-center justify-center gap-1.5 text-xs font-medium px-3 py-2 sm:py-1.5 rounded-full border transition-colors whitespace-nowrap ${active === 'lookup' ? 'bg-yellow-500 border-yellow-400 text-blue-950 font-bold' : 'border-blue-600 bg-blue-800 text-white hover:bg-blue-700'}`}>
               <i className="fas fa-search text-[14px]"></i> 查詢預約
             </button>
-            <button onClick={() => setView('admin-login')} className="text-xs font-medium px-3 py-2 sm:py-1.5 rounded-full border border-blue-700 text-blue-300 hover:text-white hover:bg-blue-800 transition-colors whitespace-nowrap">後台</button>
+            <button onClick={() => setView(currentAdmin ? 'admin-panel' : 'admin-login')} className="text-xs font-medium px-3 py-2 sm:py-1.5 rounded-full border border-blue-700 text-blue-300 hover:text-white hover:bg-blue-800 transition-colors whitespace-nowrap">後台</button>
           </nav>
+          {(loadError || !dataLoaded) && (
+            <p role="status" className={`sm:basis-full text-xs font-bold px-3 py-2 rounded-lg ${loadError ? 'bg-red-950 text-red-300 border border-red-800' : 'bg-blue-900 text-blue-200'}`}>
+              {loadError || '正在讀取最新場地資料…'}
+            </p>
+          )}
         </header>
       );
 
@@ -545,8 +753,8 @@
       }
 
       if (view === 'lookup') {
-        const lookupReady = lookupName.trim() !== '' && isValidPhone(lookupPhone) && isValidTransferCode(lookupCode);
-        const myBookings = lookupReady ? bookings.filter(b => b.name.trim() === lookupName.trim() && b.userPhone === lookupPhone && b.transferCode === lookupCode).sort((a, b) => new Date(b.date) - new Date(a.date) || new Date(b.createdAt) - new Date(a.createdAt)) : [];
+        const myBookings = lookupResults || [];
+        const editLookup = (setter) => (value) => { setter(value); setLookupResults(null); };
 
         return (
           <div className="min-h-screen">
@@ -558,22 +766,25 @@
                 <p className="text-blue-300 text-sm">輸入預約時留下的姓名、手機號碼與匯款後五碼。</p>
               </div>
 
-              <div className="bg-blue-950/60 border border-blue-800 rounded-2xl p-4 mb-6 grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <form onSubmit={runLookup} className="bg-blue-950/60 border border-blue-800 rounded-2xl p-4 mb-6 grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div>
                   <label htmlFor="lookup-name" className="block text-sm font-medium text-blue-200 mb-1.5 flex items-center"><i className="fas fa-user mr-1 text-[16px]"></i> 姓名</label>
-                  <input id="lookup-name" type="text" autoComplete="name" placeholder="預約時填的姓名" value={lookupName} onChange={e => setLookupName(e.target.value)} className="w-full bg-blue-900 border border-blue-700 rounded-xl p-3.5 text-white text-lg focus:outline-none focus:border-yellow-400 transition-all placeholder-blue-500 placeholder:text-base" />
+                  <input id="lookup-name" type="text" autoComplete="name" placeholder="預約時填的姓名" value={lookupName} onChange={e => editLookup(setLookupName)(e.target.value)} className="w-full bg-blue-900 border border-blue-700 rounded-xl p-3.5 text-white text-lg focus:outline-none focus:border-yellow-400 transition-all placeholder-blue-500 placeholder:text-base" />
                 </div>
                 <div>
                 <label htmlFor="lookup-phone" className="block text-sm font-medium text-blue-200 mb-1.5 flex items-center"><i className="fas fa-phone mr-1 text-[16px]"></i> 手機號碼</label>
-                <input id="lookup-phone" type="tel" inputMode="numeric" placeholder="09xxxxxxxx" value={lookupPhone} onChange={e => setLookupPhone(e.target.value.replace(/\D/g, '').slice(0, 10))} className="w-full bg-blue-900 border border-blue-700 rounded-xl p-3.5 text-white font-mono text-lg focus:outline-none focus:border-yellow-400 transition-all placeholder-blue-500" />
+                <input id="lookup-phone" type="tel" inputMode="numeric" placeholder="09xxxxxxxx" value={lookupPhone} onChange={e => editLookup(setLookupPhone)(e.target.value.replace(/\D/g, '').slice(0, 10))} className="w-full bg-blue-900 border border-blue-700 rounded-xl p-3.5 text-white font-mono text-lg focus:outline-none focus:border-yellow-400 transition-all placeholder-blue-500" />
                 </div>
                 <div>
                   <label htmlFor="lookup-code" className="block text-sm font-medium text-blue-200 mb-1.5 flex items-center"><i className="fas fa-money-bill-wave mr-1 text-[16px]"></i> 匯款後五碼</label>
-                  <input id="lookup-code" type="text" inputMode="numeric" placeholder="5 位數字" value={lookupCode} onChange={e => setLookupCode(e.target.value.replace(/\D/g, '').slice(0, 5))} className="w-full bg-blue-900 border border-blue-700 rounded-xl p-3.5 text-white font-mono text-lg tracking-widest focus:outline-none focus:border-yellow-400 transition-all placeholder-blue-500 placeholder:tracking-normal" />
+                  <input id="lookup-code" type="text" inputMode="numeric" placeholder="5 位數字" value={lookupCode} onChange={e => editLookup(setLookupCode)(e.target.value.replace(/\D/g, '').slice(0, 5))} className="w-full bg-blue-900 border border-blue-700 rounded-xl p-3.5 text-white font-mono text-lg tracking-widest focus:outline-none focus:border-yellow-400 transition-all placeholder-blue-500 placeholder:tracking-normal" />
                 </div>
-              </div>
+                <button type="submit" disabled={!lookupReady || lookupBusy} className="sm:col-span-3 py-3 bg-yellow-500 text-blue-950 font-bold rounded-xl hover:bg-yellow-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center">
+                  <i className="fas fa-search mr-2 text-[16px]"></i> {lookupBusy ? '查詢中…' : '查詢'}
+                </button>
+              </form>
 
-              {lookupReady && (
+              {lookupResults && (
                 <div className="mb-4 flex items-center justify-between">
                   <h3 className="text-xl font-bold text-yellow-400 flex items-center"><i className="fas fa-history mr-2"></i> 預約紀錄</h3>
                   <span className="bg-blue-800 text-blue-200 text-xs px-2 py-1 rounded-full font-bold">共 {myBookings.length} 筆</span>
@@ -583,6 +794,8 @@
               <div className="space-y-4">
                 {!lookupReady ? (
                   <p className="text-blue-400 text-sm text-center">請填寫姓名、10 碼手機號碼與 5 碼匯款後五碼</p>
+                ) : !lookupResults ? (
+                  <p className="text-blue-400 text-sm text-center">{lookupBusy ? '查詢中…' : '按「查詢」查看預約紀錄'}</p>
                 ) : myBookings.length === 0 ? (
                   <div className="bg-blue-950/60 border border-blue-800 rounded-2xl p-8 text-center backdrop-blur-sm">
                     <i className="fas fa-calendar-day mx-auto text-blue-700 mb-4 text-[48px] block text-center"></i>
@@ -595,31 +808,57 @@
         );
       }
 
+      const inputCls = 'w-full bg-blue-900 border border-blue-700 rounded-xl p-3.5 text-white focus:outline-none focus:border-yellow-400 transition-all placeholder-blue-500';
+
+      if (view === 'reset-password') {
+        return (
+          <div className="min-h-screen flex items-center justify-center p-4">
+            <div className="bg-blue-950 p-8 rounded-2xl border border-blue-800 w-full max-w-sm shadow-2xl relative overflow-hidden">
+              <div className="absolute top-0 left-0 w-full h-2 bg-yellow-500"></div>
+              <h2 className="text-2xl font-bold text-center text-yellow-400 mb-2 flex justify-center items-center">
+                <i className="fas fa-key mr-2 text-[22px]"></i> 設定新密碼
+              </h2>
+              <p className="text-blue-300 text-sm text-center mb-6">請設定新的後台密碼（至少 8 碼）。</p>
+              <form onSubmit={handlePasswordUpdate} className="space-y-4">
+                <input id="reset-new-password" type="password" autoComplete="new-password" placeholder="新密碼" value={newPassword} onChange={e => { setNewPassword(e.target.value); setPwdNotice(''); }} className={inputCls} />
+                <input id="reset-new-password-2" type="password" autoComplete="new-password" placeholder="再輸入一次新密碼" value={newPassword2} onChange={e => { setNewPassword2(e.target.value); setPwdNotice(''); }} className={inputCls} />
+                {pwdNotice && <p className="text-yellow-300 text-sm text-center font-medium">{pwdNotice}</p>}
+                <button type="submit" disabled={authBusy} className="w-full py-4 bg-yellow-500 text-blue-950 font-bold rounded-xl hover:bg-yellow-400 transition-colors disabled:opacity-50">{authBusy ? '儲存中…' : '儲存新密碼並進入後台'}</button>
+              </form>
+            </div>
+          </div>
+        );
+      }
+
       if (view === 'admin-login') {
         return (
           <div className="min-h-screen flex items-center justify-center p-4">
             <div className="bg-blue-950 p-8 rounded-2xl border border-blue-800 w-full max-w-sm shadow-2xl relative overflow-hidden">
               <div className="absolute top-0 left-0 w-full h-2 bg-red-500"></div>
               <h2 className="text-2xl font-bold text-center text-red-400 mb-6 flex justify-center items-center">
-                <i className="fas fa-user-shield mr-2 text-[24px]"></i> 管理員登入
+                <i className="fas fa-user-shield mr-2 text-[24px]"></i> {resetMode ? '忘記密碼' : '管理員登入'}
               </h2>
-              <form onSubmit={handleAdminLogin} className="space-y-5">
-                <div>
-                  <input type="password" placeholder="請輸入管理員密碼" value={adminPasswordInput} onChange={e => { setAdminPasswordInput(e.target.value); setLoginError(''); }} className="w-full bg-blue-900 border border-red-900/50 rounded-xl p-4 text-white focus:outline-none focus:border-red-400 focus:ring-1 focus:ring-red-400 transition-all text-center placeholder-blue-400 tracking-widest" />
-                  {loginError && <p className="text-red-400 text-sm mt-2 text-center font-medium animate-pulse">{loginError}</p>}
-                </div>
-                <button type="submit" className="w-full py-4 bg-red-500 text-white font-bold rounded-xl hover:bg-red-400 transition-colors shadow-lg shadow-red-500/20">登入後台</button>
-                <div className="flex justify-between items-center mt-2 px-1">
-                  <button type="button" onClick={() => setShowPwdHint(!showPwdHint)} aria-expanded={showPwdHint} className="text-blue-400 text-sm hover:text-white transition-colors">忘記密碼？</button>
-                  <button type="button" onClick={() => { setView('booking'); setAdminPasswordInput(''); setLoginError(''); setShowPwdHint(false); }} className="text-blue-300 text-sm hover:text-white transition-colors">返回預約首頁</button>
-                </div>
-                {showPwdHint && (
-                  <div className="bg-blue-900/60 border border-blue-700 rounded-xl p-3 text-sm text-blue-200 leading-relaxed">
-                    <p>副管理員忘記密碼：請聯絡主管理員，到「權限設定」重新設定。</p>
-                    <p className="mt-1">主管理員忘記密碼：請聯絡系統維護人員協助重設。</p>
+              {resetMode ? (
+                <form onSubmit={handleResetRequest} className="space-y-4">
+                  <p className="text-blue-200 text-sm">輸入管理員的 Email，我們會寄一封重設密碼信給你。</p>
+                  <input id="reset-email" type="email" autoComplete="email" required placeholder="管理員 Email" value={adminEmail} onChange={e => { setAdminEmail(e.target.value); setAuthNotice(''); }} className={inputCls} />
+                  {authNotice && <p className="text-yellow-300 text-sm font-medium leading-relaxed">{authNotice}</p>}
+                  <button type="submit" disabled={authBusy} className="w-full py-4 bg-red-500 text-white font-bold rounded-xl hover:bg-red-400 transition-colors disabled:opacity-50">{authBusy ? '寄送中…' : '寄送重設密碼信'}</button>
+                  <button type="button" onClick={() => { setResetMode(false); setAuthNotice(''); }} className="w-full text-blue-300 text-sm hover:text-white transition-colors">返回登入</button>
+                </form>
+              ) : (
+                <form onSubmit={handleAdminLogin} className="space-y-4">
+                  <input id="admin-email" type="email" autoComplete="username" required placeholder="管理員 Email" value={adminEmail} onChange={e => { setAdminEmail(e.target.value); setLoginError(''); }} className={inputCls} />
+                  <input id="admin-password" type="password" autoComplete="current-password" required placeholder="密碼" value={adminPassword} onChange={e => { setAdminPassword(e.target.value); setLoginError(''); }} className={inputCls} />
+                  {loginError && <p className="text-red-400 text-sm text-center font-medium">{loginError}</p>}
+                  {authNotice && <p className="text-yellow-300 text-sm text-center font-medium">{authNotice}</p>}
+                  <button type="submit" disabled={authBusy} className="w-full py-4 bg-red-500 text-white font-bold rounded-xl hover:bg-red-400 transition-colors shadow-lg shadow-red-500/20 disabled:opacity-50">{authBusy ? '登入中…' : '登入後台'}</button>
+                  <div className="flex justify-between items-center px-1">
+                    <button type="button" onClick={() => { setResetMode(true); setAuthNotice(''); setLoginError(''); }} className="text-blue-400 text-sm hover:text-white transition-colors">忘記密碼？</button>
+                    <button type="button" onClick={() => { setView('booking'); setAdminPassword(''); setLoginError(''); setAuthNotice(''); }} className="text-blue-300 text-sm hover:text-white transition-colors">返回預約首頁</button>
                   </div>
-                )}
-              </form>
+                </form>
+              )}
             </div>
           </div>
         );
@@ -678,6 +917,7 @@
                       身分：{currentAdmin?.role === 'main' ? '主管理員' : '副管理員'}
                     </span>
                   </h2>
+                  <p className="text-xs text-blue-400 mt-1 break-all">{currentAdmin?.email}</p>
                 </div>
 
                 <div className="flex flex-wrap gap-3 w-full lg:w-auto">
@@ -692,15 +932,13 @@
                       <i className="fas fa-users text-[16px] mr-2"></i> 客人名單
                     </button>
                     {currentAdmin?.role === 'main' && (
-                      <button onClick={() => setAdminTab('openplay')} className={`flex-1 sm:flex-none flex items-center justify-center px-4 py-2 rounded-md text-sm font-bold transition-all whitespace-nowrap ${adminTab === 'openplay' ? 'bg-yellow-500 text-blue-950 shadow' : 'text-blue-300 hover:text-white'}`}>
+                      <button onClick={() => { setAdminTab('openplay'); setEditingOpCourts(getOpenPlayCourts(opManageDate)); }} className={`flex-1 sm:flex-none flex items-center justify-center px-4 py-2 rounded-md text-sm font-bold transition-all whitespace-nowrap ${adminTab === 'openplay' ? 'bg-yellow-500 text-blue-950 shadow' : 'text-blue-300 hover:text-white'}`}>
                         <BadmintonIcon className="text-[16px] mr-2" /> 暢打管理
                       </button>
                     )}
-                    {currentAdmin?.role === 'main' && (
-                      <button onClick={() => setAdminTab('settings')} className={`flex-1 sm:flex-none flex items-center justify-center px-4 py-2 rounded-md text-sm font-bold transition-all whitespace-nowrap ${adminTab === 'settings' ? 'bg-yellow-500 text-blue-950 shadow' : 'text-blue-300 hover:text-white'}`}>
-                        <i className="fas fa-cog text-[16px] mr-2"></i> 權限設定
-                      </button>
-                    )}
+                    <button onClick={() => { setAdminTab('settings'); setPwdNotice(''); if (currentAdmin?.role === 'main') loadAdmins(); }} className={`flex-1 sm:flex-none flex items-center justify-center px-4 py-2 rounded-md text-sm font-bold transition-all whitespace-nowrap ${adminTab === 'settings' ? 'bg-yellow-500 text-blue-950 shadow' : 'text-blue-300 hover:text-white'}`}>
+                      <i className="fas fa-cog text-[16px] mr-2"></i> 帳號設定
+                    </button>
                   </div>
 
                   {currentAdmin?.role === 'main' && adminTab !== 'settings' && adminTab !== 'openplay' && adminTab !== 'customers' && (
@@ -708,7 +946,7 @@
                       <i className="fas fa-plus-circle text-[18px] mr-1"></i> 週期預約
                     </button>
                   )}
-                  <button onClick={() => { setView('booking'); setListFilter('all'); setCurrentAdmin(null); }} className="flex items-center justify-center px-4 py-2.5 bg-blue-800 text-blue-100 rounded-lg hover:bg-blue-700 hover:text-white transition-colors border border-blue-700">
+                  <button onClick={handleAdminLogout} className="flex items-center justify-center px-4 py-2.5 bg-blue-800 text-blue-100 rounded-lg hover:bg-blue-700 hover:text-white transition-colors border border-blue-700">
                     <i className="fas fa-sign-out-alt text-[18px] mr-1"></i> 退出
                   </button>
                 </div>
@@ -1020,9 +1258,10 @@
                           })}
                         </div>
 
-                        <button onClick={() => {
-                          const newOverrides = { ...openPlayOverrides, [opManageDate]: editingOpCourts };
-                          saveOpenPlayOverrides(newOverrides);
+                        <button onClick={async () => {
+                          const { error } = await db.from('open_play_overrides').upsert({ date: opManageDate, courts: [...editingOpCourts].sort() });
+                          refreshAll();
+                          if (error) { alert(errorText(error)); return; }
                           alert(`${opManageDate} 暢打保留場地設定成功！`);
                         }} className="w-full py-3 bg-yellow-500 text-blue-950 font-bold rounded-xl hover:bg-yellow-400 transition-shadow shadow-lg flex items-center justify-center">
                           <i className="fas fa-save mr-2 text-[18px]"></i> 儲存此日設定
@@ -1033,56 +1272,49 @@
                 </div>
               )}
 
-              {/* 後台 - 權限設定 (僅主管理員) */}
-              {adminTab === 'settings' && currentAdmin?.role === 'main' && (
-                <div className="bg-blue-950 rounded-2xl border border-blue-800 p-6 shadow-2xl animate-in fade-in space-y-6">
-                  <h3 className="text-xl font-bold text-yellow-400 flex items-center border-b border-blue-800 pb-4 mb-4">
-                    <i className="fas fa-cog mr-2 text-[22px]"></i> 密碼與權限設定
+              {/* 後台 - 帳號設定 */}
+              {adminTab === 'settings' && (
+                <div className="bg-blue-950 rounded-2xl border border-blue-800 p-6 shadow-2xl space-y-6">
+                  <h3 className="text-xl font-bold text-yellow-400 flex items-center border-b border-blue-800 pb-4">
+                    <i className="fas fa-cog mr-2 text-[22px]"></i> 帳號設定
                   </h3>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="bg-blue-900/40 p-5 rounded-xl border border-blue-700/50">
-                      <h4 className="text-white font-bold mb-4 flex items-center"><i className="fas fa-user-shield text-yellow-500 mr-2"></i> 修改主管理員密碼</h4>
-                      <div className="space-y-4">
-                        <div>
-                          <label className="block text-sm text-blue-200 mb-1">新密碼</label>
-                          <input type="text" id="newMainPwd" placeholder="輸入新密碼" className="w-full bg-blue-950 border border-blue-600 rounded-lg p-3 text-white focus:outline-none focus:border-yellow-400" />
-                        </div>
-                        <button onClick={() => {
-                          const val = document.getElementById('newMainPwd').value;
-                          if (val) {
-                            saveAdminAccounts({...adminAccounts, main: val});
-                            alert('主管理員密碼已成功修改！');
-                            document.getElementById('newMainPwd').value = '';
-                          }
-                        }} className="w-full py-2 bg-yellow-500 text-blue-950 font-bold rounded-lg hover:bg-yellow-400">儲存主管理員密碼</button>
+                    <form onSubmit={handlePasswordUpdate} className="bg-blue-900/40 p-5 rounded-xl border border-blue-700/50 space-y-4">
+                      <h4 className="text-white font-bold flex items-center"><i className="fas fa-key text-yellow-500 mr-2"></i> 修改我的密碼</h4>
+                      <p className="text-xs text-blue-300 break-all">登入帳號：{currentAdmin?.email}</p>
+                      <div>
+                        <label htmlFor="settings-new-password" className="block text-sm text-blue-200 mb-1">新密碼（至少 8 碼）</label>
+                        <input id="settings-new-password" type="password" autoComplete="new-password" value={newPassword} onChange={e => { setNewPassword(e.target.value); setPwdNotice(''); }} className="w-full bg-blue-950 border border-blue-600 rounded-lg p-3 text-white focus:outline-none focus:border-yellow-400" />
                       </div>
-                    </div>
+                      <div>
+                        <label htmlFor="settings-new-password-2" className="block text-sm text-blue-200 mb-1">再輸入一次新密碼</label>
+                        <input id="settings-new-password-2" type="password" autoComplete="new-password" value={newPassword2} onChange={e => { setNewPassword2(e.target.value); setPwdNotice(''); }} className="w-full bg-blue-950 border border-blue-600 rounded-lg p-3 text-white focus:outline-none focus:border-yellow-400" />
+                      </div>
+                      {pwdNotice && <p className="text-yellow-300 text-sm font-medium">{pwdNotice}</p>}
+                      <button type="submit" disabled={authBusy} className="w-full py-2.5 bg-yellow-500 text-blue-950 font-bold rounded-lg hover:bg-yellow-400 disabled:opacity-50">{authBusy ? '儲存中…' : '儲存新密碼'}</button>
+                    </form>
 
-                    <div className="bg-blue-900/40 p-5 rounded-xl border border-blue-700/50">
-                      <h4 className="text-white font-bold mb-4 flex items-center"><i className="fas fa-user-edit text-yellow-500 mr-2"></i> 修改副管理員密碼</h4>
-                      <p className="text-xs text-blue-300 mb-4">副管理員僅能查看訂單與勾選完成，無法刪除或發布週期預約。</p>
-                      <div className="space-y-4">
-                        <div>
-                          <label className="block text-sm text-blue-200 mb-1">目前密碼：<span className="font-mono text-yellow-400">{adminAccounts.sub}</span></label>
-                          <input type="text" id="newSubPwd" placeholder="輸入新密碼 (若要刪除權限請留空)" className="w-full bg-blue-950 border border-blue-600 rounded-lg p-3 text-white focus:outline-none focus:border-yellow-400" />
-                        </div>
-                        <div className="flex gap-2">
-                          <button onClick={() => {
-                            const val = document.getElementById('newSubPwd').value;
-                            if (val) {
-                              saveAdminAccounts({...adminAccounts, sub: val});
-                              alert('副管理員密碼已成功修改！');
-                              document.getElementById('newSubPwd').value = '';
-                            }
-                          }} className="flex-1 py-2 bg-yellow-500 text-blue-950 font-bold rounded-lg hover:bg-yellow-400">儲存修改</button>
-                          <button onClick={() => {
-                            saveAdminAccounts({...adminAccounts, sub: ''});
-                            alert('副管理員權限已停用 (無密碼可登入)。');
-                          }} className="px-4 py-2 bg-red-900 text-red-300 border border-red-700 font-bold rounded-lg hover:bg-red-700 hover:text-white">停用副帳號</button>
-                        </div>
+                    {currentAdmin?.role === 'main' && (
+                      <div className="bg-blue-900/40 p-5 rounded-xl border border-blue-700/50 space-y-4">
+                        <h4 className="text-white font-bold flex items-center"><i className="fas fa-users text-yellow-500 mr-2"></i> 副管理員</h4>
+                        <p className="text-xs text-blue-300 leading-relaxed">副管理員可以查看預約、勾選確認與標記爽約，不能刪除預約、建立週期預約或修改暢打設定。<br />新增方式：先到 Supabase 後台「Authentication → Users → Add user」幫員工建立 Email 與密碼，再在下面輸入那個 Email。</p>
+                        <ul className="space-y-2">
+                          {admins.map(a => (
+                            <li key={a.email} className="flex items-center justify-between gap-2 bg-blue-950/60 border border-blue-800 rounded-lg px-3 py-2 text-sm">
+                              <span className="text-white break-all">{a.email}</span>
+                              {a.role === 'main'
+                                ? <span className="text-xs text-yellow-400 font-bold whitespace-nowrap">主管理員</span>
+                                : <button onClick={() => revokeSubAdmin(a.email)} className="text-xs px-2 py-1 rounded bg-red-900 text-red-300 border border-red-700 hover:bg-red-700 hover:text-white whitespace-nowrap">移除</button>}
+                            </li>
+                          ))}
+                        </ul>
+                        <form onSubmit={grantSubAdmin} className="flex gap-2">
+                          <input id="sub-admin-email" type="email" required placeholder="員工的 Email" value={subEmail} onChange={e => setSubEmail(e.target.value)} className="flex-1 min-w-0 bg-blue-950 border border-blue-600 rounded-lg p-2.5 text-white focus:outline-none focus:border-yellow-400" />
+                          <button type="submit" className="px-4 py-2 bg-yellow-500 text-blue-950 font-bold rounded-lg hover:bg-yellow-400 whitespace-nowrap">加入</button>
+                        </form>
                       </div>
-                    </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -1361,8 +1593,8 @@
                   下一步 <i className="fas fa-chevron-right text-[20px] ml-1"></i>
                 </button>
               ) : (
-                <button onClick={handleSubmit} disabled={!bookingData.name.trim() || !isValidPhone(bookingData.phone) || !isValidTransferCode(bookingData.transferCode)} className="flex-1 ml-4 py-3 bg-yellow-500 text-blue-950 font-bold rounded-xl text-lg hover:bg-yellow-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-yellow-500/30 flex items-center justify-center">
-                  送出預約表單 <i className="fas fa-paper-plane ml-2 text-[18px]"></i>
+                <button onClick={handleSubmit} disabled={submitting || !bookingData.name.trim() || !isValidPhone(bookingData.phone) || !isValidTransferCode(bookingData.transferCode)} className="flex-1 ml-4 py-3 bg-yellow-500 text-blue-950 font-bold rounded-xl text-lg hover:bg-yellow-400 transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-yellow-500/30 flex items-center justify-center">
+                  {submitting ? '送出中…' : '送出預約表單'} <i className="fas fa-paper-plane ml-2 text-[18px]"></i>
                 </button>
               )}
             </div>
