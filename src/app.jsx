@@ -76,6 +76,17 @@ function App() {
     try { localStorage.setItem('champion_contact', JSON.stringify(contact)); } catch (e) {}
   };
 
+  // 記住這台裝置上次登入後台的 Email，之後只需輸入密碼
+  const loadAdminEmail = () => {
+    try { return localStorage.getItem('champion_admin_email') || ''; } catch (e) { return ''; }
+  };
+  const saveAdminEmail = (email) => {
+    try {
+      if (email) localStorage.setItem('champion_admin_email', email);
+      else localStorage.removeItem('champion_admin_email');
+    } catch (e) {}
+  };
+
   // === 預約與後台狀態 ===
   const emptyBooking = () => {
     const { name, phone } = loadContact();
@@ -95,7 +106,8 @@ function App() {
   const [loadError, setLoadError] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
-  const [adminEmail, setAdminEmail] = useState('');
+  const [adminEmail, setAdminEmail] = useState(loadAdminEmail);
+  const [rememberedEmail, setRememberedEmail] = useState(loadAdminEmail);
   const [adminPassword, setAdminPassword] = useState('');
   const [loginError, setLoginError] = useState('');
   const [resetMode, setResetMode] = useState(false);
@@ -389,7 +401,7 @@ function App() {
     const { error } = await db.auth.signInWithPassword({ email: adminEmail.trim(), password: adminPassword });
     if (error) {
       setAuthBusy(false);
-      setLoginError('Email 或密碼錯誤，請重新輸入');
+      setLoginError(rememberedEmail ? '密碼錯誤，請重新輸入' : 'Email 或密碼錯誤，請重新輸入');
       return;
     }
     const ok = await enterAdmin(true);
@@ -400,6 +412,16 @@ function App() {
     }
     setAdminPassword('');
     setAuthNotice('');
+    saveAdminEmail(adminEmail.trim());
+    setRememberedEmail(adminEmail.trim());
+  };
+
+  const switchAdminAccount = () => {
+    saveAdminEmail('');
+    setRememberedEmail('');
+    setAdminEmail('');
+    setAdminPassword('');
+    setLoginError('');
   };
 
   const handleResetRequest = async (e) => {
@@ -850,8 +872,20 @@ function App() {
             </form>
           ) : (
             <form onSubmit={handleAdminLogin} className="space-y-4">
-              <input id="admin-email" type="email" autoComplete="username" required placeholder="管理員 Email" value={adminEmail} onChange={e => { setAdminEmail(e.target.value); setLoginError(''); }} className={inputCls} />
-              <input id="admin-password" type="password" autoComplete="current-password" required placeholder="密碼" value={adminPassword} onChange={e => { setAdminPassword(e.target.value); setLoginError(''); }} className={inputCls} />
+              {rememberedEmail ? (
+                <div className="flex items-center justify-between gap-3 bg-blue-900/60 border border-blue-700 rounded-xl px-4 py-3">
+                  <div className="min-w-0">
+                    <p className="text-xs text-blue-400">登入帳號</p>
+                    <p className="text-white text-sm font-medium break-all">{rememberedEmail}</p>
+                  </div>
+                  <button type="button" onClick={switchAdminAccount} className="text-xs text-blue-300 hover:text-white underline underline-offset-2 whitespace-nowrap">換帳號</button>
+                  {/* 讓瀏覽器的密碼管理知道是哪個帳號 */}
+                  <input type="email" autoComplete="username" value={rememberedEmail} readOnly hidden />
+                </div>
+              ) : (
+                <input id="admin-email" type="email" autoComplete="username" required placeholder="管理員 Email" value={adminEmail} onChange={e => { setAdminEmail(e.target.value); setLoginError(''); }} className={inputCls} />
+              )}
+              <input id="admin-password" type="password" autoComplete="current-password" required autoFocus={!!rememberedEmail} placeholder="密碼" value={adminPassword} onChange={e => { setAdminPassword(e.target.value); setLoginError(''); }} className={inputCls} />
               {loginError && <p className="text-red-400 text-sm text-center font-medium">{loginError}</p>}
               {authNotice && <p className="text-yellow-300 text-sm text-center font-medium">{authNotice}</p>}
               <button type="submit" disabled={authBusy} className="w-full py-4 bg-red-500 text-white font-bold rounded-xl hover:bg-red-400 transition-colors shadow-lg shadow-red-500/20 disabled:opacity-50">{authBusy ? '登入中…' : '登入後台'}</button>
