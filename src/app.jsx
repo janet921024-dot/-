@@ -363,6 +363,9 @@ function App() {
 
   const handleSubmit = async () => {
     setSubmitting(true);
+    // 網路太慢時最多等 30 秒，避免畫面一直停在「送出中」
+    const timeout = new AbortController();
+    const timer = setTimeout(() => timeout.abort(), 30000);
     const { data, error } = await publicDb.rpc('create_booking', {
       p_date: bookingData.date,
       p_times: bookingData.times,
@@ -370,8 +373,14 @@ function App() {
       p_name: bookingData.name.trim(),
       p_phone: bookingData.phone,
       p_code: bookingData.transferCode,
-    });
+    }).abortSignal(timeout.signal);
+    clearTimeout(timer);
     setSubmitting(false);
+    if (timeout.signal.aborted) {
+      refreshAll();
+      alert('網路回應太慢，系統可能已經收到你的預約。\n請先到「查詢預約」確認，查不到再重新送出。');
+      return;
+    }
     refreshAll();
     if (error) {
       alert(errorText(error));
