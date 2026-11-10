@@ -1,5 +1,5 @@
 -- 冠軍羽球館預約系統：Supabase 資料庫結構
--- 在 Supabase 後台「SQL Editor」貼上整份執行一次即可。
+-- 在 Supabase 後台「SQL Editor」貼上整份執行一次即可，接著執行 002_shop_settings.sql。
 --
 -- 設計重點：
 -- * 客人不用登入：預約、查詢都透過下面的函式，不能直接讀寫預約資料表。

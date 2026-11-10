@@ -61,6 +61,10 @@
       return code ? ERROR_MESSAGES[code] : '連線發生問題，請稍後再試。';
     };
 
+    // 店家資訊預設值；資料庫讀到後以資料庫為準（主管理員可在後台「設定」修改）
+    const DEFAULT_SHOP = { bankCode: '808', bankName: '玉山銀行', accountNumber: '0521979250523', contactPhone: '04-2407-0766' };
+    const shopFromRow = (r) => ({ bankCode: r.bank_code, bankName: r.bank_name, accountNumber: r.account_number, contactPhone: r.contact_phone });
+
     // 資料庫欄位（底線命名）轉成畫面用的欄位
     const fromRow = (r) => ({
       id: r.id, date: r.date, times: r.times, court: r.court, name: r.name,
@@ -142,6 +146,9 @@
       const [expandedPhone, setExpandedPhone] = useState(null);
 
       const [currentAdmin, setCurrentAdmin] = useState(null); // { role: 'main' | 'sub', email }
+      const [shop, setShop] = useState(DEFAULT_SHOP);
+      const [shopForm, setShopForm] = useState(DEFAULT_SHOP);
+      const [shopNotice, setShopNotice] = useState('');
       const adminRef = useRef(null);
       adminRef.current = currentAdmin;
 
@@ -171,6 +178,9 @@
         setSlots(slotRes.data);
         setOpenPlayOverrides(Object.fromEntries(opRes.data.map(r => [r.date, r.courts])));
         setDataLoaded(true);
+        // 店家資訊讀不到時沿用預設值，不影響預約
+        const { data: shopRow } = await db.from('shop_settings').select('*').eq('id', 1).maybeSingle();
+        if (shopRow) setShop(shopFromRow(shopRow));
       };
 
       const loadAdmin = async () => {
@@ -222,6 +232,7 @@
           .on('postgres_changes', { event: '*', schema: 'public', table: 'booking_slots' }, refreshSoon)
           .on('postgres_changes', { event: '*', schema: 'public', table: 'bookings' }, refreshSoon)
           .on('postgres_changes', { event: '*', schema: 'public', table: 'open_play_overrides' }, refreshSoon)
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'shop_settings' }, refreshSoon)
           .subscribe();
         const poll = setInterval(refreshSoon, 60000);
         window.addEventListener('focus', refreshSoon);
@@ -472,6 +483,18 @@
         if (!error) setAdmins(data);
       };
 
+      const saveShop = async (e) => {
+        e.preventDefault();
+        const trimmed = Object.fromEntries(Object.entries(shopForm).map(([k, v]) => [k, v.trim()]));
+        if (Object.values(trimmed).some(v => v === '')) { setShopNotice('每一欄都要填寫'); return; }
+        const { data, error } = await db.from('shop_settings')
+          .update({ bank_code: trimmed.bankCode, bank_name: trimmed.bankName, account_number: trimmed.accountNumber, contact_phone: trimmed.contactPhone })
+          .eq('id', 1).select().maybeSingle();
+        if (error || !data) { setShopNotice('儲存失敗，請確認資料庫已執行 002_shop_settings.sql，並以主管理員登入'); return; }
+        setShop(shopFromRow(data));
+        setShopNotice('已儲存，客人的預約頁面會立即顯示新資料');
+      };
+
       const grantSubAdmin = async (e) => {
         e.preventDefault();
         const { error } = await db.rpc('grant_sub_admin', { p_email: subEmail.trim() });
@@ -587,6 +610,16 @@
         </header>
       );
 
+      const siteFooter = (
+        <footer className="max-w-2xl mx-auto px-4 pb-10 text-center text-sm text-blue-300 space-y-1">
+          <p>
+            預約問題、改期或取消請來電：
+            <a href={`tel:${shop.contactPhone.replace(/[^0-9+]/g, '')}`} className="text-yellow-400 font-bold underline underline-offset-2 whitespace-nowrap">{shop.contactPhone}</a>
+          </p>
+          <p className="text-xs text-blue-400">冠軍羽球館（國光店）</p>
+        </footer>
+      );
+
       const bookingCard = (b) => (
         <div key={b.id} className="bg-blue-950 border border-blue-700 rounded-2xl p-5 shadow-lg relative overflow-hidden">
           <div className={`absolute top-0 right-0 px-3 py-1 text-xs font-bold rounded-bl-xl ${b.isConfirmed ? 'bg-green-500 text-white' : 'bg-yellow-500 text-blue-950'}`}>
@@ -618,7 +651,7 @@
                   <i className="fas fa-check text-white text-[32px]"></i>
                 </div>
                 <h2 className="text-2xl font-extrabold text-white mb-2">預約已送出</h2>
-                <p className="text-blue-300 text-sm">店家核對匯款後會確認您的預約，可隨時用手機號碼查詢狀態。</p>
+                <p className="text-blue-300 text-sm">店家核對匯款後會確認您的預約，可隨時到「查詢預約」查看狀態。</p>
               </div>
 
               <div className="space-y-4">
@@ -640,6 +673,7 @@
                 </button>
               </div>
             </main>
+            {siteFooter}
           </div>
         );
       }
@@ -748,6 +782,7 @@
               </div>
               <p className="text-xs text-blue-400 mt-3">平日 9:00～22:00、週末 7:00～22:00 開放；「暢打」為保留給現場暢打的場地，無法線上預約。</p>
             </main>
+            {siteFooter}
           </div>
         );
       }
@@ -804,6 +839,7 @@
                 ) : myBookings.map(bookingCard)}
               </div>
             </main>
+            {siteFooter}
           </div>
         );
       }
@@ -936,8 +972,8 @@
                         <BadmintonIcon className="text-[16px] mr-2" /> 暢打管理
                       </button>
                     )}
-                    <button onClick={() => { setAdminTab('settings'); setPwdNotice(''); if (currentAdmin?.role === 'main') loadAdmins(); }} className={`flex-1 sm:flex-none flex items-center justify-center px-4 py-2 rounded-md text-sm font-bold transition-all whitespace-nowrap ${adminTab === 'settings' ? 'bg-yellow-500 text-blue-950 shadow' : 'text-blue-300 hover:text-white'}`}>
-                      <i className="fas fa-cog text-[16px] mr-2"></i> 帳號設定
+                    <button onClick={() => { setAdminTab('settings'); setPwdNotice(''); setShopNotice(''); setShopForm(shop); if (currentAdmin?.role === 'main') loadAdmins(); }} className={`flex-1 sm:flex-none flex items-center justify-center px-4 py-2 rounded-md text-sm font-bold transition-all whitespace-nowrap ${adminTab === 'settings' ? 'bg-yellow-500 text-blue-950 shadow' : 'text-blue-300 hover:text-white'}`}>
+                      <i className="fas fa-cog text-[16px] mr-2"></i> 設定
                     </button>
                   </div>
 
@@ -1272,11 +1308,11 @@
                 </div>
               )}
 
-              {/* 後台 - 帳號設定 */}
+              {/* 後台 - 設定 */}
               {adminTab === 'settings' && (
                 <div className="bg-blue-950 rounded-2xl border border-blue-800 p-6 shadow-2xl space-y-6">
                   <h3 className="text-xl font-bold text-yellow-400 flex items-center border-b border-blue-800 pb-4">
-                    <i className="fas fa-cog mr-2 text-[22px]"></i> 帳號設定
+                    <i className="fas fa-cog mr-2 text-[22px]"></i> 設定
                   </h3>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -1314,6 +1350,28 @@
                           <button type="submit" className="px-4 py-2 bg-yellow-500 text-blue-950 font-bold rounded-lg hover:bg-yellow-400 whitespace-nowrap">加入</button>
                         </form>
                       </div>
+                    )}
+
+                    {currentAdmin?.role === 'main' && (
+                      <form onSubmit={saveShop} className="bg-blue-900/40 p-5 rounded-xl border border-blue-700/50 space-y-4 md:col-span-2">
+                        <h4 className="text-white font-bold flex items-center"><i className="fas fa-money-bill-wave text-yellow-500 mr-2"></i> 店家資訊</h4>
+                        <p className="text-xs text-blue-300">顯示在客人預約頁的匯款資訊與聯絡電話。更換帳號時改這裡即可。</p>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                          {[
+                            ['bankCode', 'shop-bank-code', '銀行代碼', 'numeric'],
+                            ['bankName', 'shop-bank-name', '銀行名稱', 'text'],
+                            ['accountNumber', 'shop-account', '轉入帳號', 'numeric'],
+                            ['contactPhone', 'shop-phone', '聯絡電話', 'tel'],
+                          ].map(([key, id, label, mode]) => (
+                            <div key={key}>
+                              <label htmlFor={id} className="block text-sm text-blue-200 mb-1">{label}</label>
+                              <input id={id} type="text" inputMode={mode} value={shopForm[key]} onChange={e => { setShopForm({ ...shopForm, [key]: e.target.value }); setShopNotice(''); }} className="w-full bg-blue-950 border border-blue-600 rounded-lg p-3 text-white font-mono focus:outline-none focus:border-yellow-400" />
+                            </div>
+                          ))}
+                        </div>
+                        {shopNotice && <p className="text-yellow-300 text-sm font-medium">{shopNotice}</p>}
+                        <button type="submit" className="w-full sm:w-auto px-6 py-2.5 bg-yellow-500 text-blue-950 font-bold rounded-lg hover:bg-yellow-400">儲存店家資訊</button>
+                      </form>
                     )}
                   </div>
                 </div>
@@ -1537,8 +1595,8 @@
                       <i className="fas fa-money-bill-wave text-yellow-500 mr-2"></i> 匯款資訊
                     </h4>
                     <div className="text-sm text-blue-200 space-y-1.5">
-                      <p>銀行代碼：<span className="text-white font-bold text-base ml-1">808 (玉山銀行)</span></p>
-                      <p>轉入帳號：<span className="text-yellow-400 font-bold tracking-widest text-lg ml-1">0521979250523</span></p>
+                      <p>銀行代碼：<span className="text-white font-bold text-base ml-1">{shop.bankCode} ({shop.bankName})</span></p>
+                      <p>轉入帳號：<span className="text-yellow-400 font-bold tracking-widest text-lg ml-1 break-all">{shop.accountNumber}</span></p>
                       <div className="text-sm text-blue-100 mt-2 border-t border-blue-800/50 pt-2 bg-blue-950/50 p-3 rounded-lg border border-blue-800">
                         <div className="flex justify-between items-center">
                           <span>本次應付訂金：</span>
@@ -1599,6 +1657,7 @@
               )}
             </div>
           </main>
+          {siteFooter}
         </div>
       );
     }
