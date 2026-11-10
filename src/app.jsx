@@ -953,7 +953,6 @@ function App() {
                   身分：{currentAdmin?.role === 'main' ? '主管理員' : '副管理員'}
                 </span>
               </h2>
-              <p className="text-xs text-blue-400 mt-1 break-all">{currentAdmin?.email}</p>
             </div>
 
             <div className="flex flex-wrap gap-3 w-full lg:w-auto">
