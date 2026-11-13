@@ -240,7 +240,9 @@ function App() {
   }, []);
 
   const [showBulkModal, setShowBulkModal] = useState(false);
-  const [bulkData, setBulkData] = useState({ name: '', startDate: '', weeks: 4, times: [], courts: [] });
+  // 後台新增預約：mode 'single' 單次（指定一天）、'bulk' 週期（每週同一時段）
+  const emptyAdminBooking = () => ({ mode: 'single', name: '', phone: '', startDate: '', weeks: 4, times: [], courts: [] });
+  const [bulkData, setBulkData] = useState(emptyAdminBooking);
   const [bulkConflicts, setBulkConflicts] = useState([]);
   const maxDateObj = new Date(today);
   maxDateObj.setDate(maxDateObj.getDate() + 7);
@@ -560,12 +562,16 @@ function App() {
   const handleBulkSubmit = async () => {
     if (currentAdmin?.role !== 'main') return;
     setBulkConflicts([]);
-    if (!bulkData.name || !bulkData.startDate || bulkData.times.length === 0 || bulkData.courts.length === 0) {
-      alert('請填寫完整資訊（包含姓名、起始日、時段與場地）'); return;
+    const single = bulkData.mode === 'single';
+    if (!bulkData.name.trim() || !bulkData.startDate || bulkData.times.length === 0 || bulkData.courts.length === 0) {
+      alert(`請填寫完整資訊（包含姓名、${single ? '日期' : '起始日'}、時段與場地）`); return;
+    }
+    if (single && bulkData.phone.trim() && !/^[0-9-]{8,15}$/.test(bulkData.phone.trim())) {
+      alert('電話只能填數字與 -，或留空'); return;
     }
     const generatedDates = [];
     let currentDate = new Date(bulkData.startDate);
-    for (let i = 0; i < bulkData.weeks; i++) {
+    for (let i = 0; i < (single ? 1 : bulkData.weeks); i++) {
       generatedDates.push(getLocalDateString(currentDate));
       currentDate.setDate(currentDate.getDate() + 7);
     }
@@ -584,17 +590,27 @@ function App() {
     });
     if (conflicts.length > 0) { setBulkConflicts(conflicts); return; }
 
-    const { error } = await db.rpc('create_bulk_bookings', {
-      p_name: bulkData.name.trim(),
-      p_dates: generatedDates,
-      p_times: [...bulkData.times].sort((a, b) => parseInt(a) - parseInt(b)),
-      p_courts: [...bulkData.courts].sort((a, b) => parseInt(a) - parseInt(b)),
-    });
+    const times = [...bulkData.times].sort((a, b) => parseInt(a) - parseInt(b));
+    const courts = [...bulkData.courts].sort((a, b) => parseInt(a) - parseInt(b));
+    const { error } = single
+      ? await db.rpc('create_admin_booking', { p_name: bulkData.name.trim(), p_phone: bulkData.phone.trim(), p_date: generatedDates[0], p_times: times, p_courts: courts })
+      : await db.rpc('create_bulk_bookings', { p_name: bulkData.name.trim(), p_dates: generatedDates, p_times: times, p_courts: courts });
     refreshAll();
-    if (error) { alert(errorText(error)); return; }
-    alert(`成功建立 ${bulkData.weeks} 筆預約！`);
+    if (error) {
+      if (/create_admin_booking/.test(error.message)) {
+        alert('資料庫還沒有單次預約功能，請先在 Supabase 執行 003_admin_single_booking.sql');
+      } else if (/INVALID_DATE/.test(error.message)) {
+        alert('不能選擇今天以前的日期');
+      } else if (/INVALID_PHONE/.test(error.message)) {
+        alert('電話只能填數字與 -，或留空');
+      } else {
+        alert(errorText(error));
+      }
+      return;
+    }
+    alert(single ? `已建立 ${generatedDates[0]} 的預約！` : `成功建立 ${bulkData.weeks} 筆預約！`);
     setShowBulkModal(false);
-    setBulkData({ name: '', startDate: '', weeks: 4, times: [], courts: [] });
+    setBulkData(emptyAdminBooking());
   };
 
   const getDaysInMonth = (year, month) => new Date(year, month + 1, 0).getDate();
@@ -1006,8 +1022,8 @@ function App() {
               </div>
 
               {currentAdmin?.role === 'main' && adminTab !== 'settings' && adminTab !== 'openplay' && adminTab !== 'customers' && (
-                <button onClick={() => setShowBulkModal(true)} className="flex-1 sm:flex-none flex items-center justify-center px-4 py-2.5 bg-yellow-500 text-blue-950 font-bold rounded-lg hover:bg-yellow-400 transition-colors shadow-lg">
-                  <i className="fas fa-plus-circle text-[18px] mr-1"></i> 週期預約
+                <button onClick={() => { setBulkConflicts([]); setShowBulkModal(true); }} className="flex-1 sm:flex-none flex items-center justify-center px-4 py-2.5 bg-yellow-500 text-blue-950 font-bold rounded-lg hover:bg-yellow-400 transition-colors shadow-lg">
+                  <i className="fas fa-plus-circle text-[18px] mr-1"></i> 新增預約
                 </button>
               )}
               <button onClick={handleAdminLogout} className="flex items-center justify-center px-4 py-2.5 bg-blue-800 text-blue-100 rounded-lg hover:bg-blue-700 hover:text-white transition-colors border border-blue-700">
@@ -1407,23 +1423,38 @@ function App() {
 
         </div>
 
-        {/* 後台 MODAL: 週期預約 */}
+        {/* 後台 MODAL: 新增預約（單次 / 週期） */}
         {showBulkModal && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm custom-scrollbar overflow-y-auto">
             <div className="bg-blue-950 w-full max-w-2xl rounded-2xl border border-blue-700 shadow-2xl my-8 relative">
               <div className="p-5 border-b border-blue-800 flex justify-between items-center bg-blue-900/50 rounded-t-2xl">
                 <h3 className="text-xl font-bold text-yellow-400 flex items-center">
-                  <i className="fas fa-calendar-alt mr-2 text-[22px]"></i> 新增長期/週期預約
+                  <i className="fas fa-calendar-alt mr-2 text-[22px]"></i> 新增預約
                 </h3>
                 <button onClick={() => setShowBulkModal(false)} className="text-blue-300 hover:text-white bg-blue-900 hover:bg-red-500 rounded-full p-1.5 transition-colors"><i className="fas fa-times text-[20px]"></i></button>
               </div>
 
               <div className="p-6 space-y-5">
+                <div className="grid grid-cols-2 gap-2 bg-blue-900 rounded-lg p-1 border border-blue-700" role="radiogroup" aria-label="預約類型">
+                  {[['single', '單次（指定一天）'], ['bulk', '週期（月繳、季繳…）']].map(([mode, label]) => (
+                    <button key={mode} type="button" role="radio" aria-checked={bulkData.mode === mode} onClick={() => { setBulkData({ ...bulkData, mode }); setBulkConflicts([]); }} className={`py-2.5 rounded-md text-sm font-bold transition-all ${bulkData.mode === mode ? 'bg-yellow-500 text-blue-950 shadow' : 'text-blue-300 hover:text-white'}`}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                {bulkData.mode === 'single' && <p className="text-xs text-blue-300 -mt-2">例如電話預約：不限 7 天內、不需匯款後五碼，建立後直接是「已確認」，在列表中顯示為臨打。</p>}
+
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-sm font-medium text-blue-200 mb-1.5">預約人姓名 / 標籤</label>
-                    <input type="text" placeholder="例：王先生-季繳" value={bulkData.name} onChange={e => setBulkData({...bulkData, name: e.target.value})} className="w-full bg-blue-900 border border-blue-700 rounded-lg p-3 text-white focus:border-yellow-400 focus:outline-none" />
+                    <label htmlFor="admin-booking-name" className="block text-sm font-medium text-blue-200 mb-1.5">預約人姓名 / 標籤</label>
+                    <input id="admin-booking-name" type="text" placeholder={bulkData.mode === 'single' ? '例：陳先生' : '例：王先生-季繳'} value={bulkData.name} onChange={e => setBulkData({...bulkData, name: e.target.value})} className="w-full bg-blue-900 border border-blue-700 rounded-lg p-3 text-white focus:border-yellow-400 focus:outline-none" />
                   </div>
+                  {bulkData.mode === 'single' ? (
+                  <div>
+                    <label htmlFor="admin-booking-phone" className="block text-sm font-medium text-blue-200 mb-1.5">電話 <span className="text-blue-400 text-xs">(選填)</span></label>
+                    <input id="admin-booking-phone" type="tel" inputMode="tel" placeholder="例：0912345678" value={bulkData.phone} onChange={e => setBulkData({...bulkData, phone: e.target.value})} className="w-full bg-blue-900 border border-blue-700 rounded-lg p-3 text-white font-mono focus:border-yellow-400 focus:outline-none" />
+                  </div>
+                  ) : (
                   <div>
                     <label className="block text-sm font-medium text-blue-200 mb-1.5">繳費週期</label>
                     <select value={bulkData.weeks} onChange={e => setBulkData({...bulkData, weeks: parseInt(e.target.value)})} className="w-full bg-blue-900 border border-blue-700 rounded-lg p-3 text-white focus:border-yellow-400 focus:outline-none cursor-pointer">
@@ -1433,11 +1464,12 @@ function App() {
                       <option value={48}>年繳 (48週)</option>
                     </select>
                   </div>
+                  )}
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-blue-200 mb-1.5">首次預約日期</label>
-                  <input type="date" min={todayString} value={bulkData.startDate} onChange={e => setBulkData({...bulkData, startDate: e.target.value})} className="w-full bg-blue-900 border border-blue-700 rounded-lg p-3 text-white focus:border-yellow-400 focus:outline-none [color-scheme:dark] cursor-pointer" />
+                  <label htmlFor="admin-booking-date" className="block text-sm font-medium text-blue-200 mb-1.5">{bulkData.mode === 'single' ? '預約日期' : '首次預約日期'}</label>
+                  <input id="admin-booking-date" type="date" min={todayString} value={bulkData.startDate} onChange={e => setBulkData({...bulkData, startDate: e.target.value})} className="w-full bg-blue-900 border border-blue-700 rounded-lg p-3 text-white focus:border-yellow-400 focus:outline-none [color-scheme:dark] cursor-pointer" />
                 </div>
 
                 <div>
@@ -1478,7 +1510,7 @@ function App() {
                 {bulkConflicts.length > 0 && (
                   <div className="bg-red-950/50 border border-red-800 rounded-lg p-4">
                     <h4 className="text-red-400 font-bold flex items-center mb-2"><i className="fas fa-exclamation-triangle mr-1 text-[18px]"></i> 建立失敗：發現時段衝突！</h4>
-                    <p className="text-sm text-red-200 mb-2">以下未來日期/場地已被其他人預約(或被設定為暢打)，請手動調整或清理後再試：</p>
+                    <p className="text-sm text-red-200 mb-2">以下日期/場地已被其他人預約(或被設定為暢打)，請手動調整或清理後再試：</p>
                     <ul className="text-xs text-red-300 list-disc list-inside max-h-24 overflow-y-auto custom-scrollbar">
                       {bulkConflicts.map((msg, i) => <li key={i}>{msg}</li>)}
                     </ul>
@@ -1488,7 +1520,7 @@ function App() {
 
               <div className="p-5 border-t border-blue-800 flex justify-end gap-3 bg-blue-900/30 rounded-b-2xl">
                 <button onClick={() => setShowBulkModal(false)} className="px-5 py-2 rounded-lg text-blue-200 hover:text-white hover:bg-blue-800 transition-colors">取消</button>
-                <button onClick={handleBulkSubmit} className="px-6 py-2 bg-yellow-500 text-blue-950 font-bold rounded-lg hover:bg-yellow-400 transition-colors shadow-lg">自動產生 {bulkData.weeks} 筆預約</button>
+                <button onClick={handleBulkSubmit} className="px-6 py-2 bg-yellow-500 text-blue-950 font-bold rounded-lg hover:bg-yellow-400 transition-colors shadow-lg">{bulkData.mode === 'single' ? '建立預約' : `自動產生 ${bulkData.weeks} 筆預約`}</button>
               </div>
             </div>
           </div>

@@ -19,3 +19,4 @@ npm run build
 
 1. `supabase/schema.sql`：資料表、預約規則與權限
 2. `supabase/002_shop_settings.sql`：匯款帳號與聯絡電話（後台「設定」可修改）
+3. `supabase/003_admin_single_booking.sql`：後台「新增預約 → 單次」（例如電話預約）
