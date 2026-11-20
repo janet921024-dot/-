@@ -14,7 +14,7 @@ npm install
 npm run build
 ```
 
-會重新產生網站實際使用的 `index.html`、`admin.html` 與 `assets/`，一起提交。
+會重新產生網站實際使用的 `index.html`、`admin.html` 與 `assets/`，一起提交。React、Supabase 與圖示字型也會複製到 `assets/vendor/`，網站不依賴外部 CDN。
 
 ## 資料庫
 
@@ -25,3 +25,4 @@ npm run build
 3. `supabase/003_admin_single_booking.sql`：後台「新增預約 → 單次」（例如電話預約）
 4. `supabase/004_sub_admin_accounts.sql`：後台「設定 → 副管理員」直接建立帳號、改密碼
 5. `supabase/005_system_health.sql`：每週自動檢查用，回報 Supabase 改版是否影響建立副管理員
+6. `supabase/006_rate_limits.sql`：防止濫用，同一個 IP 每小時最多成功預約 15 次、查詢 30 次

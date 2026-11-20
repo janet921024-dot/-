@@ -39,6 +39,7 @@ const ERROR_MESSAGES = {
   INVALID_PHONE: '請輸入 09 開頭的 10 碼手機號碼。',
   INVALID_CODE: '請輸入 5 位數的匯款後五碼。',
   NOT_ALLOWED: '只有主管理員可以執行這個操作。',
+  RATE_LIMITED: '短時間內的操作次數太多，請過一段時間再試，或直接來電預約。',
   USER_NOT_FOUND: '找不到這個副管理員帳號。',
   INVALID_EMAIL: '請輸入正確的 Email。',
   WEAK_PASSWORD: '密碼至少要 8 碼。',

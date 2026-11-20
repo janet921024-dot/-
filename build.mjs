@@ -2,12 +2,28 @@
 //   src/app.jsx    → assets/app.js（JSX 先轉譯好，手機不用即時轉譯）
 //   src/*.jsx      → assets/app.css（只保留有用到的 Tailwind 樣式）
 //   src/index.html → index.html（客人預約網頁）與 admin.html（後台）
+//   React、Supabase、圖示字型 → assets/vendor/（放在自己的網站上，外部 CDN 故障時網站照常運作）
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { transformSync } from '@babel/core';
 
 mkdirSync('assets', { recursive: true });
+
+// 第三方程式庫：版本由 package.json 固定，檔名帶版本號
+const pkgVersion = (name) => JSON.parse(readFileSync(`node_modules/${name}/package.json`, 'utf8')).version;
+const vendor = [
+  ['node_modules/react/umd/react.production.min.js', `assets/vendor/react-${pkgVersion('react')}.min.js`],
+  ['node_modules/react-dom/umd/react-dom.production.min.js', `assets/vendor/react-dom-${pkgVersion('react-dom')}.min.js`],
+  ['node_modules/@supabase/supabase-js/dist/umd/supabase.js', `assets/vendor/supabase-${pkgVersion('@supabase/supabase-js')}.js`],
+  ['node_modules/@fortawesome/fontawesome-free/css/fontawesome.min.css', 'assets/vendor/fontawesome/css/fontawesome.min.css'],
+  ['node_modules/@fortawesome/fontawesome-free/css/solid.min.css', 'assets/vendor/fontawesome/css/solid.min.css'],
+  ['node_modules/@fortawesome/fontawesome-free/webfonts/fa-solid-900.woff2', 'assets/vendor/fontawesome/webfonts/fa-solid-900.woff2'],
+  ['node_modules/@fortawesome/fontawesome-free/webfonts/fa-solid-900.ttf', 'assets/vendor/fontawesome/webfonts/fa-solid-900.ttf'],
+];
+mkdirSync('assets/vendor/fontawesome/css', { recursive: true });
+mkdirSync('assets/vendor/fontawesome/webfonts', { recursive: true });
+for (const [from, to] of vendor) copyFileSync(from, to);
 
 const { code } = transformSync(readFileSync('src/app.jsx', 'utf8'), {
   filename: 'app.jsx',
@@ -25,6 +41,9 @@ execFileSync('npx', ['tailwindcss', '-i', 'src/tailwind.css', '--content', 'src/
 // 檔名後加上內容的版本號，網站更新後瀏覽器（包含 LINE 內建瀏覽器）就不會沿用舊檔案
 const version = (file) => createHash('sha256').update(readFileSync(file)).digest('hex').slice(0, 10);
 const page = readFileSync('src/index.html', 'utf8')
+  .replaceAll('{{react}}', pkgVersion('react'))
+  .replaceAll('{{react-dom}}', pkgVersion('react-dom'))
+  .replaceAll('{{supabase}}', pkgVersion('@supabase/supabase-js'))
   .replace('<!DOCTYPE html>', '<!DOCTYPE html>\n<!-- 這個檔案由 npm run build 產生，請修改 src/ 裡的檔案 -->')
   .replace('href="assets/app.css"', `href="assets/app.css?v=${version('assets/app.css')}"`)
   .replace('src="assets/app.js"', `src="assets/app.js?v=${version('assets/app.js')}"`);
