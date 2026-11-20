@@ -121,10 +121,17 @@ begin
 end
 $$;
 
--- 確認限制有作用：回報這次請求是否取得來源位址（只回傳是或否，不回傳位址本身）
-create function public.rate_limit_probe() returns jsonb
-language sql stable security definer set search_path = public
-as $$ select jsonb_build_object('ip_detected', public.client_ip() is not null) $$;
+-- 確認限制有作用：回報這次請求是否取得來源位址。
+-- 不回傳位址本身，只回傳打亂後的前 8 碼，用來比對兩次請求是否來自同一個地方。
+create or replace function public.rate_limit_probe() returns jsonb
+language sql stable security definer set search_path = public, extensions
+as $$
+  select jsonb_build_object(
+    'ip_detected', public.client_ip() is not null,
+    'ip_fingerprint', left(encode(digest(coalesce(public.client_ip(), ''), 'sha256'), 'hex'), 8),
+    'forwarded_hops', coalesce(array_length(string_to_array(nullif(current_setting('request.headers', true), '')::json->>'x-forwarded-for', ','), 1), 0)
+  )
+$$;
 
 revoke execute on function public.client_ip(), public.enforce_rate_limit(text, int, interval) from public, anon, authenticated;
 revoke execute on function public.rate_limit_probe() from public;
