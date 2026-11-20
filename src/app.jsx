@@ -1,8 +1,16 @@
 const { useState, useEffect, useRef } = React;
 
+// 客人網頁（index.html）與後台（admin.html）共用同一份程式，依網址決定顯示哪一邊
+const IS_ADMIN_PAGE = /admin\.html$/.test(window.location.pathname);
+
 // 從重設密碼信的連結回來時，網址會帶 type=recovery；連結失效則帶 error_code
 const OPENED_FROM_RESET_LINK = window.location.hash.includes('type=recovery');
 const RESET_LINK_EXPIRED = window.location.hash.includes('error_code=');
+
+// 舊的重設密碼信會連到客人網頁：轉到後台處理
+if (!IS_ADMIN_PAGE && (OPENED_FROM_RESET_LINK || RESET_LINK_EXPIRED)) {
+  window.location.replace('admin.html' + window.location.hash);
+}
 
 // Supabase 連線設定（publishable key 本來就是放在網頁裡公開使用的金鑰）
 const SUPABASE_URL = 'https://xqwrpedqgndhgkoxvziq.supabase.co';
@@ -75,7 +83,7 @@ const BadmintonIcon = ({ className }) => (
 );
 
 function App() {
-  const [view, setView] = useState(OPENED_FROM_RESET_LINK ? 'reset-password' : RESET_LINK_EXPIRED ? 'admin-login' : 'booking'); // 'booking', 'done', 'schedule', 'lookup', 'admin-login', 'admin-panel', 'reset-password'
+  const [view, setView] = useState(!IS_ADMIN_PAGE ? 'booking' : OPENED_FROM_RESET_LINK ? 'reset-password' : 'admin-login'); // 'booking', 'done', 'schedule', 'lookup', 'admin-login', 'admin-panel', 'reset-password'
 
   const [step, setStep] = useState(1);
 
@@ -204,9 +212,9 @@ function App() {
 
   useEffect(() => {
     loadPublic();
-    // 這台裝置之前登入過後台就自動恢復管理員身分（從重設密碼連結回來時另外處理）
-    if (!OPENED_FROM_RESET_LINK) {
-      db.auth.getSession().then(({ data }) => { if (data.session) enterAdmin(false); });
+    // 後台：這台裝置之前登入過就直接進入（從重設密碼連結回來時另外處理）
+    if (IS_ADMIN_PAGE && !OPENED_FROM_RESET_LINK) {
+      db.auth.getSession().then(({ data }) => { if (data.session) enterAdmin(true); });
     }
     const { data: authSub } = db.auth.onAuthStateChange((event) => {
       if (event === 'PASSWORD_RECOVERY') setView('reset-password');
@@ -494,7 +502,7 @@ function App() {
     setCurrentAdmin(null);
     setAdminBookings([]);
     setListFilter('all');
-    setView('booking');
+    setView('admin-login');
   };
 
   const loadAdmins = async () => {
@@ -623,7 +631,7 @@ function App() {
       <h1 className="text-xl font-bold text-yellow-400 flex items-center tracking-wide">
         冠軍羽球館 <span className="text-sm font-normal text-blue-200 ml-2">（國光店）</span>
       </h1>
-      <nav className="grid grid-cols-4 sm:flex sm:items-center gap-2">
+      <nav className="grid grid-cols-3 sm:flex sm:items-center gap-2">
         <button onClick={() => setView('schedule')} className={`flex items-center justify-center gap-1.5 text-xs font-medium px-3 py-2 sm:py-1.5 rounded-full border transition-colors whitespace-nowrap ${active === 'schedule' ? 'bg-yellow-500 border-yellow-400 text-blue-950 font-bold' : 'border-blue-600 bg-blue-800 text-white hover:bg-blue-700'}`}>
           <i className="fas fa-calendar-alt text-[14px]"></i> 場地狀況
         </button>
@@ -633,7 +641,6 @@ function App() {
         <button onClick={() => setView('lookup')} className={`flex items-center justify-center gap-1.5 text-xs font-medium px-3 py-2 sm:py-1.5 rounded-full border transition-colors whitespace-nowrap ${active === 'lookup' ? 'bg-yellow-500 border-yellow-400 text-blue-950 font-bold' : 'border-blue-600 bg-blue-800 text-white hover:bg-blue-700'}`}>
           <i className="fas fa-search text-[14px]"></i> 查詢預約
         </button>
-        <button onClick={() => setView(currentAdmin ? 'admin-panel' : 'admin-login')} className="text-xs font-medium px-3 py-2 sm:py-1.5 rounded-full border border-blue-700 text-blue-300 hover:text-white hover:bg-blue-800 transition-colors whitespace-nowrap">後台</button>
       </nav>
       {(loadError || !dataLoaded) && (
         <p role="status" className={`sm:basis-full text-xs font-bold px-3 py-2 rounded-lg ${loadError ? 'bg-red-950 text-red-300 border border-red-800' : 'bg-blue-900 text-blue-200'}`}>
@@ -936,7 +943,7 @@ function App() {
               <button type="submit" disabled={authBusy} className="w-full py-4 bg-red-500 text-white font-bold rounded-xl hover:bg-red-400 transition-colors shadow-lg shadow-red-500/20 disabled:opacity-50">{authBusy ? '登入中…' : '登入後台'}</button>
               <div className="flex justify-between items-center px-1">
                 <button type="button" onClick={() => { setResetMode(true); setAuthNotice(''); setLoginError(''); }} className="text-blue-400 text-sm hover:text-white transition-colors">忘記密碼？</button>
-                <button type="button" onClick={() => { setView('booking'); setAdminPassword(''); setLoginError(''); setAuthNotice(''); }} className="text-blue-300 text-sm hover:text-white transition-colors">返回預約首頁</button>
+                <a href="./" className="text-blue-300 text-sm hover:text-white transition-colors">前往預約網頁</a>
               </div>
             </form>
           )}
@@ -1026,6 +1033,9 @@ function App() {
                   <i className="fas fa-plus-circle text-[18px] mr-1"></i> 新增預約
                 </button>
               )}
+              <a href="./" target="_blank" rel="noopener" className="flex items-center justify-center px-4 py-2.5 bg-blue-800 text-blue-100 rounded-lg hover:bg-blue-700 hover:text-white transition-colors border border-blue-700">
+                <i className="fas fa-home text-[16px] mr-1"></i> 預約網頁
+              </a>
               <button onClick={handleAdminLogout} className="flex items-center justify-center px-4 py-2.5 bg-blue-800 text-blue-100 rounded-lg hover:bg-blue-700 hover:text-white transition-colors border border-blue-700">
                 <i className="fas fa-sign-out-alt text-[18px] mr-1"></i> 退出
               </button>
