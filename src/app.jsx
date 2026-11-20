@@ -966,7 +966,8 @@ function App() {
           </h2>
           {resetMode ? (
             <form onSubmit={handleResetRequest} className="space-y-4">
-              <p className="text-blue-200 text-sm">輸入管理員的 Email，我們會寄一封重設密碼信給你。</p>
+              <p className="text-blue-200 text-sm">主管理員請輸入 Email，我們會寄一封重設密碼信給你。</p>
+              <p className="text-yellow-300/90 text-xs">副管理員忘記密碼請找主管理員，在後台「設定 → 副管理員 → 改密碼」重新設定。</p>
               <input id="reset-email" type="email" autoComplete="email" required placeholder="管理員 Email" value={adminEmail} onChange={e => { setAdminEmail(e.target.value); setAuthNotice(''); }} className={inputCls} />
               {authNotice && <p className="text-yellow-300 text-sm font-medium leading-relaxed">{authNotice}</p>}
               <button type="submit" disabled={authBusy} className="w-full py-4 bg-red-500 text-white font-bold rounded-xl hover:bg-red-400 transition-colors disabled:opacity-50">{authBusy ? '寄送中…' : '寄送重設密碼信'}</button>
@@ -1073,9 +1074,12 @@ function App() {
                     <BadmintonIcon className="text-[16px] mr-2" /> 暢打管理
                   </button>
                 )}
-                <button onClick={() => { setAdminTab('settings'); setPwdNotice(''); setShopNotice(''); setShopForm(shop); if (currentAdmin?.role === 'main') loadAdmins(); }} className={`flex-1 sm:flex-none flex items-center justify-center px-4 py-2 rounded-md text-sm font-bold transition-all whitespace-nowrap ${adminTab === 'settings' ? 'bg-yellow-500 text-blue-950 shadow' : 'text-blue-300 hover:text-white'}`}>
-                  <i className="fas fa-cog text-[16px] mr-2"></i> 設定
-                </button>
+                {/* 設定只給主管理員；副管理員的密碼由主管理員在這裡修改 */}
+                {currentAdmin?.role === 'main' && (
+                  <button onClick={() => { setAdminTab('settings'); setPwdNotice(''); setShopNotice(''); setShopForm(shop); loadAdmins(); }} className={`flex-1 sm:flex-none flex items-center justify-center px-4 py-2 rounded-md text-sm font-bold transition-all whitespace-nowrap ${adminTab === 'settings' ? 'bg-yellow-500 text-blue-950 shadow' : 'text-blue-300 hover:text-white'}`}>
+                    <i className="fas fa-cog text-[16px] mr-2"></i> 設定
+                  </button>
+                )}
               </div>
 
               {currentAdmin?.role === 'main' && adminTab !== 'settings' && adminTab !== 'openplay' && adminTab !== 'customers' && (
@@ -1413,7 +1417,7 @@ function App() {
           )}
 
           {/* 後台 - 設定 */}
-          {adminTab === 'settings' && (
+          {adminTab === 'settings' && currentAdmin?.role === 'main' && (
             <div className="bg-blue-950 rounded-2xl border border-blue-800 p-6 shadow-2xl space-y-6">
               <h3 className="text-xl font-bold text-yellow-400 flex items-center border-b border-blue-800 pb-4">
                 <i className="fas fa-cog mr-2 text-[22px]"></i> 設定
