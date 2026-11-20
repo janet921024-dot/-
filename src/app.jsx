@@ -446,7 +446,14 @@ function App() {
     const { error } = await db.auth.signInWithPassword({ email: adminEmail.trim(), password: adminPassword });
     if (error) {
       setAuthBusy(false);
-      setLoginError(rememberedEmail ? '密碼錯誤，請重新輸入' : 'Email 或密碼錯誤，請重新輸入');
+      if (error.status >= 500 || !error.status) {
+        // 不是帳密錯誤，而是登入系統本身出錯（例如帳號資料不完整），保留代碼方便排查
+        setLoginError(`登入系統發生錯誤，請截圖給維護人員（${error.status || '無回應'}：${error.message}）`);
+      } else if (rememberedEmail) {
+        setLoginError(`「${rememberedEmail}」的密碼錯誤。要登入其他帳號請按「換帳號」`);
+      } else {
+        setLoginError('Email 或密碼錯誤，請重新輸入');
+      }
       return;
     }
     const ok = await enterAdmin(true);
