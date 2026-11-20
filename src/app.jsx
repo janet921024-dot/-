@@ -39,7 +39,9 @@ const ERROR_MESSAGES = {
   INVALID_PHONE: '請輸入 09 開頭的 10 碼手機號碼。',
   INVALID_CODE: '請輸入 5 位數的匯款後五碼。',
   NOT_ALLOWED: '只有主管理員可以執行這個操作。',
-  USER_NOT_FOUND: '找不到這個 Email 的帳號，請先在 Supabase 後台建立帳號。',
+  USER_NOT_FOUND: '找不到這個副管理員帳號。',
+  INVALID_EMAIL: '請輸入正確的 Email。',
+  WEAK_PASSWORD: '密碼至少要 8 碼。',
   ALREADY_ADMIN: '這個帳號已經是管理員了。',
 };
 const errorText = (error) => {
@@ -138,6 +140,10 @@ function App() {
   const [pwdNotice, setPwdNotice] = useState('');
   const [admins, setAdmins] = useState([]);
   const [subEmail, setSubEmail] = useState('');
+  const [subPassword, setSubPassword] = useState('');
+  const [subBusy, setSubBusy] = useState(false);
+  const [pwdEditEmail, setPwdEditEmail] = useState(null); // 正在改密碼的副管理員
+  const [pwdEditValue, setPwdEditValue] = useState('');
   const [adminTab, setAdminTab] = useState('list'); // 'list', 'calendar', 'customers', 'openplay', 'settings'
   const [listFilter, setListFilter] = useState('all');
   const [customerSearch, setCustomerSearch] = useState('');
@@ -522,12 +528,34 @@ function App() {
     setShopNotice('已儲存，客人的預約頁面會立即顯示新資料');
   };
 
-  const grantSubAdmin = async (e) => {
+  // 資料庫還沒執行 004_sub_admin_accounts.sql 時的提示
+  const subAdminErrorText = (error) => /create_sub_admin|set_sub_admin_password/.test(error?.message || '')
+    ? '資料庫還沒有這個功能，請先在 Supabase 執行 004_sub_admin_accounts.sql'
+    : errorText(error);
+
+  const createSubAdmin = async (e) => {
     e.preventDefault();
-    const { error } = await db.rpc('grant_sub_admin', { p_email: subEmail.trim() });
-    if (error) { alert(errorText(error)); return; }
+    if (subPassword.length < 8) { alert('密碼至少要 8 碼'); return; }
+    setSubBusy(true);
+    const { error } = await db.rpc('create_sub_admin', { p_email: subEmail.trim(), p_password: subPassword });
+    setSubBusy(false);
+    if (error) { alert(subAdminErrorText(error)); return; }
+    alert(`已建立副管理員 ${subEmail.trim().toLowerCase()}，請把 Email 和密碼告訴員工。`);
     setSubEmail('');
+    setSubPassword('');
     loadAdmins();
+  };
+
+  const saveSubAdminPassword = async (e) => {
+    e.preventDefault();
+    if (pwdEditValue.length < 8) { alert('密碼至少要 8 碼'); return; }
+    setSubBusy(true);
+    const { error } = await db.rpc('set_sub_admin_password', { p_email: pwdEditEmail, p_password: pwdEditValue });
+    setSubBusy(false);
+    if (error) { alert(subAdminErrorText(error)); return; }
+    alert(`已更新 ${pwdEditEmail} 的密碼。`);
+    setPwdEditEmail(null);
+    setPwdEditValue('');
   };
 
   const revokeSubAdmin = async (email) => {
@@ -1388,20 +1416,32 @@ function App() {
                 {currentAdmin?.role === 'main' && (
                   <div className="bg-blue-900/40 p-5 rounded-xl border border-blue-700/50 space-y-4">
                     <h4 className="text-white font-bold flex items-center"><i className="fas fa-users text-yellow-500 mr-2"></i> 副管理員</h4>
-                    <p className="text-xs text-blue-300 leading-relaxed">副管理員可以查看預約、勾選確認與標記爽約，不能刪除預約、建立週期預約或修改暢打設定。<br />新增方式：先到 Supabase 後台「Authentication → Users → Add user」幫員工建立 Email 與密碼，再在下面輸入那個 Email。</p>
+                    <p className="text-xs text-blue-300 leading-relaxed">副管理員可以查看預約、勾選確認與標記爽約，不能刪除或新增預約、修改暢打設定與店家資訊。</p>
                     <ul className="space-y-2">
-                      {admins.map(a => (
-                        <li key={a.email} className="flex items-center justify-between gap-2 bg-blue-950/60 border border-blue-800 rounded-lg px-3 py-2 text-sm">
-                          <span className="text-white break-all">{a.email}</span>
-                          {a.role === 'main'
-                            ? <span className="text-xs text-yellow-400 font-bold whitespace-nowrap">主管理員</span>
-                            : <button onClick={() => revokeSubAdmin(a.email)} className="text-xs px-2 py-1 rounded bg-red-900 text-red-300 border border-red-700 hover:bg-red-700 hover:text-white whitespace-nowrap">移除</button>}
+                      {admins.filter(a => a.role === 'sub').length === 0 && <li className="text-xs text-blue-400">目前沒有副管理員。</li>}
+                      {admins.filter(a => a.role === 'sub').map(a => (
+                        <li key={a.email} className="bg-blue-950/60 border border-blue-800 rounded-lg px-3 py-2 text-sm space-y-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-white break-all">{a.email}</span>
+                            <div className="flex gap-1.5">
+                              <button onClick={() => { setPwdEditEmail(pwdEditEmail === a.email ? null : a.email); setPwdEditValue(''); }} className="text-xs px-2 py-1 rounded bg-blue-800 text-blue-100 border border-blue-600 hover:bg-blue-700 whitespace-nowrap">改密碼</button>
+                              <button onClick={() => revokeSubAdmin(a.email)} className="text-xs px-2 py-1 rounded bg-red-900 text-red-300 border border-red-700 hover:bg-red-700 hover:text-white whitespace-nowrap">移除</button>
+                            </div>
+                          </div>
+                          {pwdEditEmail === a.email && (
+                            <form onSubmit={saveSubAdminPassword} className="flex gap-2">
+                              <input id="sub-admin-new-password" type="text" autoComplete="off" placeholder="新密碼（至少 8 碼）" value={pwdEditValue} onChange={e => setPwdEditValue(e.target.value)} className="flex-1 min-w-0 bg-blue-950 border border-blue-600 rounded-lg p-2 text-white font-mono focus:outline-none focus:border-yellow-400" />
+                              <button type="submit" disabled={subBusy} className="px-3 py-2 bg-yellow-500 text-blue-950 font-bold rounded-lg hover:bg-yellow-400 whitespace-nowrap disabled:opacity-50">儲存</button>
+                            </form>
+                          )}
                         </li>
                       ))}
                     </ul>
-                    <form onSubmit={grantSubAdmin} className="flex gap-2">
-                      <input id="sub-admin-email" type="email" required placeholder="員工的 Email" value={subEmail} onChange={e => setSubEmail(e.target.value)} className="flex-1 min-w-0 bg-blue-950 border border-blue-600 rounded-lg p-2.5 text-white focus:outline-none focus:border-yellow-400" />
-                      <button type="submit" className="px-4 py-2 bg-yellow-500 text-blue-950 font-bold rounded-lg hover:bg-yellow-400 whitespace-nowrap">加入</button>
+                    <form onSubmit={createSubAdmin} className="space-y-2 border-t border-blue-800 pt-4">
+                      <p className="text-sm text-white font-bold">新增副管理員</p>
+                      <input id="sub-admin-email" type="email" required autoComplete="off" placeholder="員工的 Email（忘記密碼時會寄到這裡）" value={subEmail} onChange={e => setSubEmail(e.target.value)} className="w-full bg-blue-950 border border-blue-600 rounded-lg p-2.5 text-white focus:outline-none focus:border-yellow-400" />
+                      <input id="sub-admin-password" type="text" required autoComplete="off" placeholder="設定密碼（至少 8 碼）" value={subPassword} onChange={e => setSubPassword(e.target.value)} className="w-full bg-blue-950 border border-blue-600 rounded-lg p-2.5 text-white font-mono focus:outline-none focus:border-yellow-400" />
+                      <button type="submit" disabled={subBusy} className="w-full py-2.5 bg-yellow-500 text-blue-950 font-bold rounded-lg hover:bg-yellow-400 disabled:opacity-50">{subBusy ? '處理中…' : '建立副管理員'}</button>
                     </form>
                   </div>
                 )}
