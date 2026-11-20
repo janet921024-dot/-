@@ -496,7 +496,19 @@ function App() {
     const { error } = await db.auth.updateUser({ password: newPassword });
     setAuthBusy(false);
     if (error) {
-      setPwdNotice(/different from the old/i.test(error.message) ? '新密碼不能和舊密碼相同' : '密碼更新失敗，請重新登入後再試');
+      const code = error.code || '';
+      if (code === 'same_password' || /different from the old/i.test(error.message)) {
+        setPwdNotice('新密碼不能和舊密碼相同');
+      } else if (code === 'reauthentication_needed' || /reauthenticat/i.test(error.message)) {
+        setPwdNotice('為了安全，Supabase 要求最近登入才能改密碼：請按「退出」重新登入後再改一次');
+      } else if (code === 'weak_password' || /weak|should be at least|characters/i.test(error.message)) {
+        setPwdNotice(`密碼強度不足，請換一組更長或更複雜的密碼（${error.message}）`);
+      } else if (code === 'session_not_found' || error.status === 401 || error.status === 403) {
+        setPwdNotice('登入已過期，請按「退出」重新登入後再改一次');
+      } else {
+        // 其他原因：顯示代碼方便排查
+        setPwdNotice(`密碼更新失敗，請截圖給維護人員（${error.status || '無回應'}：${code || error.message}）`);
+      }
       return;
     }
     setNewPassword('');
@@ -536,9 +548,12 @@ function App() {
   };
 
   // 資料庫還沒執行 004_sub_admin_accounts.sql 時的提示
-  const subAdminErrorText = (error) => /create_sub_admin|set_sub_admin_password/.test(error?.message || '')
-    ? '資料庫還沒有這個功能，請先在 Supabase 執行 004_sub_admin_accounts.sql'
-    : errorText(error);
+  const subAdminErrorText = (error) => {
+    const message = error?.message || '';
+    if (/create_sub_admin|set_sub_admin_password/.test(message)) return '資料庫還沒有這個功能，請先在 Supabase 執行 004_sub_admin_accounts.sql';
+    if (Object.keys(ERROR_MESSAGES).some(k => message.includes(k))) return errorText(error);
+    return `操作失敗，請截圖給維護人員（${error?.code || ''}：${message || '無回應'}）`;
+  };
 
   const createSubAdmin = async (e) => {
     e.preventDefault();
