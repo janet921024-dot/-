@@ -15,18 +15,16 @@ if (!IS_ADMIN_PAGE && (OPENED_FROM_RESET_LINK || RESET_LINK_EXPIRED)) {
 // Supabase 連線設定（publishable key 本來就是放在網頁裡公開使用的金鑰）
 const SUPABASE_URL = 'https://xqwrpedqgndhgkoxvziq.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_j_inm_0LgaLkZULSkHx9Kg_odk2hljY';
-const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY); // 管理員登入用
-
-// 客人不用登入：另開一個不保存登入狀態的連線。
-// 手機從銀行 App 切回來時，登入用的連線會先做檢查，客人的預約不必排隊等它。
-const publicDb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
-  auth: {
-    persistSession: false,
-    autoRefreshToken: false,
-    detectSessionInUrl: false,
-    storageKey: 'champion-public',
-    lock: (name, acquireTimeout, fn) => fn(),
-  },
+// 每個網頁只建立一個連線。
+// lock 不使用瀏覽器的跨分頁排隊：手機會凍結背景分頁，若凍結時正好排在隊伍裡，
+// 其他分頁的登入、預約會一直等下去（Supabase 已知問題）。
+const noLock = (name, acquireTimeout, fn) => fn();
+const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
+  auth: IS_ADMIN_PAGE
+    // 後台：保存登入狀態，並處理重設密碼信的連結
+    ? { lock: noLock }
+    // 客人網頁：不需要登入，不保存任何登入狀態
+    : { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false, storageKey: 'champion-public', lock: noLock },
 });
 
 // 資料庫回傳的錯誤代碼（見 supabase/schema.sql）對應的提示文字
@@ -186,8 +184,8 @@ function App() {
 
   const loadPublic = async () => {
     const [slotRes, opRes] = await Promise.all([
-      fetchAll(() => publicDb.from('booking_slots').select('date, time, court').gte('date', todayString).lte('date', maxDateString)),
-      fetchAll(() => publicDb.from('open_play_overrides').select('date, courts')),
+      fetchAll(() => db.from('booking_slots').select('date, time, court').gte('date', todayString).lte('date', maxDateString)),
+      fetchAll(() => db.from('open_play_overrides').select('date, courts')),
     ]);
     if (slotRes.error || opRes.error) {
       setLoadError('無法連線到預約系統，請檢查網路後重新整理頁面。');
@@ -198,7 +196,7 @@ function App() {
     setOpenPlayOverrides(Object.fromEntries(opRes.data.map(r => [r.date, r.courts])));
     setDataLoaded(true);
     // 店家資訊讀不到時沿用預設值，不影響預約
-    const { data: shopRow } = await publicDb.from('shop_settings').select('*').eq('id', 1).maybeSingle();
+    const { data: shopRow } = await db.from('shop_settings').select('*').eq('id', 1).maybeSingle();
     if (shopRow) setShop(shopFromRow(shopRow));
   };
 
@@ -417,7 +415,7 @@ function App() {
     // 網路太慢時最多等 30 秒，避免畫面一直停在「送出中」
     const timeout = new AbortController();
     const timer = setTimeout(() => timeout.abort(), 30000);
-    const { data, error } = await publicDb.rpc('create_booking', {
+    const { data, error } = await db.rpc('create_booking', {
       p_date: bookingData.date,
       p_times: bookingData.times,
       p_courts: bookingData.court,
@@ -456,7 +454,7 @@ function App() {
     if (e) e.preventDefault();
     if (!lookupReady) return;
     setLookupBusy(true);
-    const { data, error } = await publicDb.rpc('lookup_bookings', { p_name: lookupName.trim(), p_phone: lookupPhone, p_code: lookupCode });
+    const { data, error } = await db.rpc('lookup_bookings', { p_name: lookupName.trim(), p_phone: lookupPhone, p_code: lookupCode });
     setLookupBusy(false);
     if (error) {
       setLookupResults(null);
@@ -478,10 +476,14 @@ function App() {
     e.preventDefault();
     setAuthBusy(true);
     setLoginError('');
-    const { error } = await db.auth.signInWithPassword({ email: adminEmail.trim(), password: adminPassword });
+    // 最多等 20 秒，避免畫面一直停在「登入中」
+    const timeout = new Promise(resolve => setTimeout(() => resolve({ error: { status: 0, message: 'timeout', timedOut: true } }), 20000));
+    const { error } = await Promise.race([db.auth.signInWithPassword({ email: adminEmail.trim(), password: adminPassword }), timeout]);
     if (error) {
       setAuthBusy(false);
-      if (error.status >= 500 || !error.status) {
+      if (error.timedOut) {
+        setLoginError('登入等候太久，請關掉其他開著的預約網頁分頁，重新整理後再試一次');
+      } else if (error.status >= 500 || !error.status) {
         // 不是帳密錯誤，而是登入系統本身出錯（例如帳號資料不完整），保留代碼方便排查
         setLoginError(`登入系統發生錯誤，請截圖給維護人員（${error.status || '無回應'}：${error.message}）`);
       } else if (rememberedEmail) {
