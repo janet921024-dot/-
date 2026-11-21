@@ -99,7 +99,18 @@ function App() {
     try { localStorage.setItem('champion_contact', JSON.stringify(contact)); } catch (e) {}
   };
 
-  // 記住這台裝置上次登入後台的 Email，之後只需輸入密碼
+  // 主管理員只在目前這個分頁保持登入：關掉分頁或瀏覽器後要重新登入
+  const markMainSession = (on) => {
+    try {
+      if (on) sessionStorage.setItem('champion_main_session', '1');
+      else sessionStorage.removeItem('champion_main_session');
+    } catch (e) {}
+  };
+  const hasMainSession = () => {
+    try { return sessionStorage.getItem('champion_main_session') === '1'; } catch (e) { return false; }
+  };
+
+  // 記住這台裝置上次登入後台的副管理員 Email，之後只需輸入密碼（主管理員不記住）
   const loadAdminEmail = () => {
     try { return localStorage.getItem('champion_admin_email') || ''; } catch (e) { return ''; }
   };
@@ -208,7 +219,7 @@ function App() {
   const enterAdmin = async (goToPanel) => {
     const { data: role, error } = await db.rpc('admin_role');
     if (error || !role) {
-      await db.auth.signOut();
+      await db.auth.signOut({ scope: 'local' });
       return false;
     }
     const { data: { user } } = await db.auth.getUser();
@@ -227,10 +238,26 @@ function App() {
     loadPublic();
     // 後台：這台裝置之前登入過就直接進入（從重設密碼連結回來時另外處理）
     if (IS_ADMIN_PAGE && !OPENED_FROM_RESET_LINK) {
-      db.auth.getSession().then(({ data }) => { if (data.session) enterAdmin(true); });
+      db.auth.getSession().then(async ({ data }) => {
+        if (!data.session) return;
+        const { data: role } = await db.rpc('admin_role');
+        // 主管理員上次的登入不延續到新的分頁或重新開啟的瀏覽器
+        if (role === 'main' && !hasMainSession()) {
+          await db.auth.signOut({ scope: 'local' });
+          return;
+        }
+        enterAdmin(true);
+      });
     }
     const { data: authSub } = db.auth.onAuthStateChange((event) => {
       if (event === 'PASSWORD_RECOVERY') setView('reset-password');
+      // 在其他分頁登出（或登入失效）時，這個分頁也回到登入畫面
+      if (event === 'SIGNED_OUT' && IS_ADMIN_PAGE) {
+        adminRef.current = null;
+        setCurrentAdmin(null);
+        setAdminBookings([]);
+        setView(prev => (prev === 'reset-password' ? prev : 'admin-login'));
+      }
     });
 
     // 有人預約、管理員修改時即時更新；另外每分鐘與切回頁面時再同步一次
@@ -472,8 +499,16 @@ function App() {
     }
     setAdminPassword('');
     setAuthNotice('');
-    saveAdminEmail(adminEmail.trim());
-    setRememberedEmail(adminEmail.trim());
+    if (adminRef.current?.role === 'main') {
+      // 主管理員：不記住 Email，關掉分頁就登出
+      markMainSession(true);
+      saveAdminEmail('');
+      setRememberedEmail('');
+      setAdminEmail('');
+    } else {
+      saveAdminEmail(adminEmail.trim());
+      setRememberedEmail(adminEmail.trim());
+    }
   };
 
   const switchAdminAccount = () => {
@@ -526,11 +561,13 @@ function App() {
       window.history.replaceState(null, '', window.location.pathname);
       const ok = await enterAdmin(true);
       if (!ok) setView('admin-login');
+      else if (adminRef.current?.role === 'main') markMainSession(true);
     }
   };
 
   const handleAdminLogout = async () => {
-    await db.auth.signOut();
+    markMainSession(false);
+    await db.auth.signOut({ scope: 'local' });
     adminRef.current = null;
     setCurrentAdmin(null);
     setAdminBookings([]);
@@ -998,7 +1035,7 @@ function App() {
               <button type="button" onClick={() => { setResetMode(false); setAuthNotice(''); }} className="w-full text-blue-300 text-sm hover:text-white transition-colors">返回登入</button>
             </form>
           ) : (
-            <form onSubmit={handleAdminLogin} className="space-y-4">
+            <form onSubmit={handleAdminLogin} autoComplete="off" className="space-y-4">
               {rememberedEmail ? (
                 <div className="flex items-center justify-between gap-3 bg-blue-900/60 border border-blue-700 rounded-xl px-4 py-3">
                   <div className="min-w-0">
@@ -1006,13 +1043,11 @@ function App() {
                     <p className="text-white text-sm font-medium break-all">{rememberedEmail}</p>
                   </div>
                   <button type="button" onClick={switchAdminAccount} className="text-xs text-blue-300 hover:text-white underline underline-offset-2 whitespace-nowrap">換帳號</button>
-                  {/* 讓瀏覽器的密碼管理知道是哪個帳號 */}
-                  <input type="email" autoComplete="username" value={rememberedEmail} readOnly hidden />
                 </div>
               ) : (
-                <input id="admin-email" type="email" autoComplete="username" required placeholder="管理員 Email" value={adminEmail} onChange={e => { setAdminEmail(e.target.value); setLoginError(''); }} className={inputCls} />
+                <input id="admin-email" type="email" autoComplete="off" required placeholder="管理員 Email" value={adminEmail} onChange={e => { setAdminEmail(e.target.value); setLoginError(''); }} className={inputCls} />
               )}
-              <input id="admin-password" type="password" autoComplete="current-password" required autoFocus={!!rememberedEmail} placeholder="密碼" value={adminPassword} onChange={e => { setAdminPassword(e.target.value); setLoginError(''); }} className={inputCls} />
+              <input id="admin-password" type="password" autoComplete="off" required autoFocus={!!rememberedEmail} placeholder="密碼" value={adminPassword} onChange={e => { setAdminPassword(e.target.value); setLoginError(''); }} className={inputCls} />
               {loginError && <p className="text-red-400 text-sm text-center font-medium">{loginError}</p>}
               {authNotice && <p className="text-yellow-300 text-sm text-center font-medium">{authNotice}</p>}
               <button type="submit" disabled={authBusy} className="w-full py-4 bg-red-500 text-white font-bold rounded-xl hover:bg-red-400 transition-colors shadow-lg shadow-red-500/20 disabled:opacity-50">{authBusy ? '登入中…' : '登入後台'}</button>
