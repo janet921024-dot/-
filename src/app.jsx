@@ -147,9 +147,9 @@ function App() {
   const [pwdEditValue, setPwdEditValue] = useState('');
   const [adminTab, setAdminTab] = useState('list'); // 'list', 'calendar', 'customers', 'openplay', 'settings'
   const [listFilter, setListFilter] = useState('all');
-  const [listScope, setListScope] = useState('upcoming'); // 'upcoming' 還沒結束、'past' 已結束（只隱藏，不刪除）
   const [customerSearch, setCustomerSearch] = useState('');
   const [expandedPhone, setExpandedPhone] = useState(null);
+  const lastTapRef = useRef({ phone: null, at: 0 }); // 客人名單「點兩下」展開（滑鼠與手機觸控都適用）
 
   const [currentAdmin, setCurrentAdmin] = useState(null); // { role: 'main' | 'sub', email }
   const [shop, setShop] = useState(DEFAULT_SHOP);
@@ -1006,18 +1006,10 @@ function App() {
   }
 
   if (view === 'admin-panel') {
-    // 預約的最後一個時段結束後就算「已結束」，移到過去紀錄（資料保留，客人名單與爽約紀錄仍會用到）
-    const nowHour = new Date().getHours();
-    const isOver = (b) => {
-      const endHour = Math.max(...b.times.map(t => parseInt(t, 10))) + 1;
-      return b.date < todayString || (b.date === todayString && endHour <= nowHour);
-    };
+    // 預約列表只放今天與以後；過了當天的預約到「客人名單」查看（資料保留，不刪除）
     const startKey = (b) => `${b.date} ${[...b.times].sort()[0]}`;
-    const upcomingBookings = bookings.filter(b => !isOver(b));
-    const pastBookings = bookings.filter(isOver);
-    let sortedBookings = listScope === 'upcoming'
-      ? [...upcomingBookings].sort((a, b) => startKey(a).localeCompare(startKey(b)))
-      : [...pastBookings].sort((a, b) => startKey(b).localeCompare(startKey(a)));
+    const upcomingBookings = bookings.filter(b => b.date >= todayString);
+    let sortedBookings = [...upcomingBookings].sort((a, b) => startKey(a).localeCompare(startKey(b)));
 
     if (listFilter === 'pending') {
       sortedBookings = sortedBookings.filter(b => !b.isConfirmed);
@@ -1112,12 +1104,7 @@ function App() {
           {/* 後台 - 預約列表 */}
           {adminTab === 'list' && (
             <div className="bg-blue-950 rounded-2xl border border-blue-800 overflow-hidden shadow-2xl">
-              <div className="bg-blue-900/50 p-4 border-b border-blue-800 flex flex-wrap items-center gap-3">
-                <div className="flex bg-blue-950 rounded-lg p-1 border border-blue-700" role="radiogroup" aria-label="顯示範圍">
-                  {[['upcoming', `即將到來 (${upcomingBookings.length})`], ['past', `過去紀錄 (${pastBookings.length})`]].map(([scope, label]) => (
-                    <button key={scope} role="radio" aria-checked={listScope === scope} onClick={() => setListScope(scope)} className={`px-3 py-1.5 rounded-md text-sm font-bold whitespace-nowrap transition-colors ${listScope === scope ? 'bg-yellow-500 text-blue-950' : 'text-blue-300 hover:text-white'}`}>{label}</button>
-                  ))}
-                </div>
+              <div className="bg-blue-900/50 p-4 border-b border-blue-800 flex flex-wrap items-center justify-between gap-3">
               <div className="flex gap-2 overflow-x-auto custom-scrollbar">
                 <button onClick={() => setListFilter('all')} className={`px-4 py-1.5 rounded-full text-sm font-bold whitespace-nowrap transition-colors ${listFilter === 'all' ? 'bg-yellow-500 text-blue-950' : 'bg-blue-900 border border-blue-700 text-blue-300 hover:text-white'}`}>全部預約</button>
                 <button onClick={() => setListFilter('pending')} className={`px-4 py-1.5 rounded-full text-sm font-bold whitespace-nowrap transition-colors flex items-center ${listFilter === 'pending' ? 'bg-yellow-500 text-blue-950' : 'bg-blue-900 border border-blue-700 text-blue-300 hover:text-white'}`}>
@@ -1127,6 +1114,7 @@ function App() {
                 <button onClick={() => setListFilter('regular')} className={`px-4 py-1.5 rounded-full text-sm font-bold whitespace-nowrap transition-colors ${listFilter === 'regular' ? 'bg-yellow-500 text-blue-950' : 'bg-blue-900 border border-blue-700 text-blue-300 hover:text-white'}`}>臨打預約</button>
                 <button onClick={() => setListFilter('bulk')} className={`px-4 py-1.5 rounded-full text-sm font-bold whitespace-nowrap transition-colors ${listFilter === 'bulk' ? 'bg-yellow-500 text-blue-950' : 'bg-blue-900 border border-blue-700 text-blue-300 hover:text-white'}`}>週期預約</button>
               </div>
+                <p className="text-xs text-blue-300">顯示今天與以後的預約 · 以前的紀錄請到「客人名單」查看</p>
               </div>
 
               <div className="overflow-x-auto">
@@ -1146,7 +1134,7 @@ function App() {
                   </thead>
                   <tbody className="divide-y divide-blue-800/50">
                     {sortedBookings.length === 0 ? (
-                      <tr><td colSpan="9" className="p-12 text-center text-blue-400 text-lg">{listScope === 'upcoming' ? '目前沒有還沒結束的預約' : '此分類下沒有過去紀錄'}</td></tr>
+                      <tr><td colSpan="9" className="p-12 text-center text-blue-400 text-lg">今天與以後沒有這類預約</td></tr>
                     ) : (
                       sortedBookings.map(b => (
                         <tr key={b.id} className={`transition-colors ${b.isConfirmed ? 'bg-green-900/10 hover:bg-green-900/20' : 'hover:bg-blue-900/40'}`}>
@@ -1203,7 +1191,7 @@ function App() {
                   <i className="fas fa-search absolute left-3 top-3 text-blue-400"></i>
                   <input id="customer-search" type="text" placeholder="輸入姓名或手機號碼搜尋..." value={customerSearch} onChange={e => setCustomerSearch(e.target.value)} className="w-full bg-blue-950 border border-blue-700 rounded-lg pl-10 pr-4 py-2 text-white focus:border-yellow-400 focus:outline-none placeholder-blue-600" />
                 </div>
-                <p className="text-xs text-blue-300">共 {customers.length} 位客人 · 點一列查看預約並標記爽約</p>
+                <p className="text-xs text-blue-300">共 {customers.length} 位客人 · 在客人那一列<b className="text-yellow-400">點兩下</b>，查看過去紀錄並標記爽約</p>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-sm text-blue-100 min-w-[720px]">
@@ -1221,7 +1209,22 @@ function App() {
                       <tr><td colSpan="5" className="p-12 text-center text-blue-400 text-lg">{customers.length === 0 ? '還沒有客人預約過' : '找不到符合的客人'}</td></tr>
                     ) : filteredCustomers.map(c => (
                       <React.Fragment key={c.phone}>
-                        <tr onClick={() => setExpandedPhone(expandedPhone === c.phone ? null : c.phone)} className={`cursor-pointer transition-colors ${expandedPhone === c.phone ? 'bg-blue-900/60' : 'hover:bg-blue-900/40'}`}>
+                        <tr
+                          tabIndex={0}
+                          title="點兩下查看過去紀錄"
+                          aria-expanded={expandedPhone === c.phone}
+                          onClick={() => {
+                            const now = Date.now();
+                            const last = lastTapRef.current;
+                            if (last.phone === c.phone && now - last.at < 450) {
+                              setExpandedPhone(expandedPhone === c.phone ? null : c.phone);
+                              lastTapRef.current = { phone: null, at: 0 };
+                            } else {
+                              lastTapRef.current = { phone: c.phone, at: now };
+                            }
+                          }}
+                          onKeyDown={e => { if (e.key === 'Enter') setExpandedPhone(expandedPhone === c.phone ? null : c.phone); }}
+                          className={`cursor-pointer select-none transition-colors ${expandedPhone === c.phone ? 'bg-blue-900/60' : 'hover:bg-blue-900/40'}`}>
                           <td className="p-4 font-bold text-white">{expandedPhone === c.phone ? <i className="fas fa-chevron-down mr-2 text-blue-400 text-[12px]"></i> : <i className="fas fa-chevron-right mr-2 text-blue-400 text-[12px]"></i>}{c.name}</td>
                           <td className="p-4 font-mono text-blue-200">{c.phone}</td>
                           <td className="p-4 text-center"><span className="bg-blue-800 text-yellow-400 px-3 py-1 rounded-full font-bold text-xs">{c.bookings.length} 次</span></td>
@@ -1235,8 +1238,14 @@ function App() {
                         {expandedPhone === c.phone && (
                           <tr className="bg-blue-900/30">
                             <td colSpan="5" className="p-4">
+                              {(() => {
+                                const history = c.bookings.filter(b => b.date <= todayString);
+                                const upcomingCount = c.bookings.length - history.length;
+                                return (
                               <div className="space-y-2">
-                                {c.bookings.map(b => {
+                                <p className="text-sm font-bold text-yellow-400">過去紀錄（含今天）· {history.length} 筆{upcomingCount > 0 && <span className="text-blue-300 font-normal">　另有 {upcomingCount} 筆之後的預約，在「預約列表」</span>}</p>
+                                {history.length === 0 && <p className="text-xs text-blue-400">還沒有過去的預約紀錄。</p>}
+                                {history.map(b => {
                                   const canMark = b.date <= todayString;
                                   return (
                                     <div key={b.id} className={`flex flex-wrap items-center justify-between gap-3 p-3 rounded-lg border ${b.noShow ? 'bg-red-950/40 border-red-800' : 'bg-blue-950/60 border-blue-800'}`}>
@@ -1256,6 +1265,8 @@ function App() {
                                   );
                                 })}
                               </div>
+                                );
+                              })()}
                             </td>
                           </tr>
                         )}
