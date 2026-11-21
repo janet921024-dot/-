@@ -1021,22 +1021,29 @@ function App() {
 
     const pendingCount = upcomingBookings.filter(b => !b.isConfirmed).length;
 
-    // 客人名單：依電話整理臨打預約（週期預約為後台建立，不列入）
+    // 客人名單：有手機號碼的依電話整理；週期預約與後台建立、沒有手機號碼的預約依名稱整理
     const customerMap = {};
     bookings.forEach(b => {
-      if (b.isBulk || !isValidPhone(b.userPhone || '')) return;
-      if (!customerMap[b.userPhone]) customerMap[b.userPhone] = { phone: b.userPhone, bookings: [] };
-      customerMap[b.userPhone].bookings.push(b);
+      const phone = b.userPhone || '';
+      const key = b.isBulk ? `bulk:${b.name.trim()}` : isValidPhone(phone) ? phone : `name:${b.name.trim()}`;
+      if (!customerMap[key]) {
+        customerMap[key] = { key, kind: b.isBulk ? 'bulk' : isValidPhone(phone) ? 'phone' : 'internal', phone: isValidPhone(phone) ? phone : '', bookings: [] };
+      }
+      customerMap[key].bookings.push(b);
     });
     const customers = Object.values(customerMap).map(c => {
       const byDate = [...c.bookings].sort((a, b) => b.date.localeCompare(a.date) || new Date(b.createdAt) - new Date(a.createdAt));
-      return { ...c, bookings: byDate, name: byDate[0].name, lastDate: byDate[0].date, noShows: c.bookings.filter(b => b.noShow).length };
+      // 沒有手機號碼的單次預約可能填了市話，顯示最近一筆的電話
+      const otherPhone = c.kind === 'internal' ? (byDate.find(b => b.userPhone && b.userPhone !== '內部建立') || {}).userPhone || '' : '';
+      return { ...c, otherPhone, bookings: byDate, name: byDate[0].name, lastDate: byDate[0].date, noShows: c.bookings.filter(b => b.noShow).length };
     });
-    const noShowsByPhone = Object.fromEntries(customers.map(c => [c.phone, c.noShows]));
+    const noShowsByPhone = Object.fromEntries(customers.filter(c => c.kind === 'phone').map(c => [c.phone, c.noShows]));
     const term = customerSearch.trim().toLowerCase();
     const filteredCustomers = customers
-      .filter(c => !term || c.name.toLowerCase().includes(term) || c.phone.includes(term))
-      .sort((a, b) => b.bookings.length - a.bookings.length || b.lastDate.localeCompare(a.lastDate));
+      .filter(c => !term || c.name.toLowerCase().includes(term) || (c.phone || c.otherPhone).includes(term))
+      // 一般客人在前，再來是後台建立、週期預約（週期預約次數多，放前面會蓋過一般客人）
+      .sort((a, b) => ['phone', 'internal', 'bulk'].indexOf(a.kind) - ['phone', 'internal', 'bulk'].indexOf(b.kind)
+        || b.bookings.length - a.bookings.length || b.lastDate.localeCompare(a.lastDate));
 
     const year = calendarDate.getFullYear();
     const month = calendarDate.getMonth();
@@ -1191,14 +1198,14 @@ function App() {
                   <i className="fas fa-search absolute left-3 top-3 text-blue-400"></i>
                   <input id="customer-search" type="text" placeholder="輸入姓名或手機號碼搜尋..." value={customerSearch} onChange={e => setCustomerSearch(e.target.value)} className="w-full bg-blue-950 border border-blue-700 rounded-lg pl-10 pr-4 py-2 text-white focus:border-yellow-400 focus:outline-none placeholder-blue-600" />
                 </div>
-                <p className="text-xs text-blue-300">共 {customers.length} 位客人 · 在客人那一列<b className="text-yellow-400">點兩下</b>，查看過去紀錄並標記爽約</p>
+                <p className="text-xs text-blue-300">共 {customers.length} 筆（含週期預約） · 在那一列<b className="text-yellow-400">點兩下</b>，查看過去紀錄並標記爽約</p>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-sm text-blue-100 min-w-[720px]">
                   <thead className="bg-blue-900 text-yellow-500 font-semibold border-b-2 border-blue-800">
                     <tr>
                       <th className="p-4 whitespace-nowrap">姓名</th>
-                      <th className="p-4 whitespace-nowrap">手機號碼</th>
+                      <th className="p-4 whitespace-nowrap">手機號碼 / 類型</th>
                       <th className="p-4 text-center whitespace-nowrap">預約次數</th>
                       <th className="p-4 whitespace-nowrap">最近預約日期</th>
                       <th className="p-4 text-center whitespace-nowrap">爽約</th>
@@ -1208,25 +1215,29 @@ function App() {
                     {filteredCustomers.length === 0 ? (
                       <tr><td colSpan="5" className="p-12 text-center text-blue-400 text-lg">{customers.length === 0 ? '還沒有客人預約過' : '找不到符合的客人'}</td></tr>
                     ) : filteredCustomers.map(c => (
-                      <React.Fragment key={c.phone}>
+                      <React.Fragment key={c.key}>
                         <tr
                           tabIndex={0}
                           title="點兩下查看過去紀錄"
-                          aria-expanded={expandedPhone === c.phone}
+                          aria-expanded={expandedPhone === c.key}
                           onClick={() => {
                             const now = Date.now();
                             const last = lastTapRef.current;
-                            if (last.phone === c.phone && now - last.at < 450) {
-                              setExpandedPhone(expandedPhone === c.phone ? null : c.phone);
+                            if (last.phone === c.key && now - last.at < 450) {
+                              setExpandedPhone(expandedPhone === c.key ? null : c.key);
                               lastTapRef.current = { phone: null, at: 0 };
                             } else {
-                              lastTapRef.current = { phone: c.phone, at: now };
+                              lastTapRef.current = { phone: c.key, at: now };
                             }
                           }}
-                          onKeyDown={e => { if (e.key === 'Enter') setExpandedPhone(expandedPhone === c.phone ? null : c.phone); }}
-                          className={`cursor-pointer select-none transition-colors ${expandedPhone === c.phone ? 'bg-blue-900/60' : 'hover:bg-blue-900/40'}`}>
-                          <td className="p-4 font-bold text-white">{expandedPhone === c.phone ? <i className="fas fa-chevron-down mr-2 text-blue-400 text-[12px]"></i> : <i className="fas fa-chevron-right mr-2 text-blue-400 text-[12px]"></i>}{c.name}</td>
-                          <td className="p-4 font-mono text-blue-200">{c.phone}</td>
+                          onKeyDown={e => { if (e.key === 'Enter') setExpandedPhone(expandedPhone === c.key ? null : c.key); }}
+                          className={`cursor-pointer select-none transition-colors ${expandedPhone === c.key ? 'bg-blue-900/60' : 'hover:bg-blue-900/40'}`}>
+                          <td className="p-4 font-bold text-white">{expandedPhone === c.key ? <i className="fas fa-chevron-down mr-2 text-blue-400 text-[12px]"></i> : <i className="fas fa-chevron-right mr-2 text-blue-400 text-[12px]"></i>}{c.name}</td>
+                          <td className="p-4 font-mono text-blue-200">
+                            {c.kind === 'bulk' && <span className="px-2 py-1 text-[10px] font-bold rounded bg-purple-900 text-purple-300 border border-purple-700 font-sans">週期預約</span>}
+                            {c.kind === 'phone' && c.phone}
+                            {c.kind === 'internal' && <>{c.otherPhone || <span className="text-blue-500">—</span>} <span className="ml-1 px-2 py-1 text-[10px] font-bold rounded bg-blue-800 text-blue-300 border border-blue-700 font-sans">後台建立</span></>}
+                          </td>
                           <td className="p-4 text-center"><span className="bg-blue-800 text-yellow-400 px-3 py-1 rounded-full font-bold text-xs">{c.bookings.length} 次</span></td>
                           <td className="p-4 text-blue-300">{c.lastDate}</td>
                           <td className="p-4 text-center">
@@ -1235,7 +1246,7 @@ function App() {
                               : <span className="text-blue-600 text-xs">—</span>}
                           </td>
                         </tr>
-                        {expandedPhone === c.phone && (
+                        {expandedPhone === c.key && (
                           <tr className="bg-blue-900/30">
                             <td colSpan="5" className="p-4">
                               {(() => {
@@ -1254,7 +1265,7 @@ function App() {
                                         <span className="text-blue-300">第 {b.court.join(', ')} 場地</span>
                                         {b.times.map(t => <span key={t} className="bg-blue-800 border border-blue-700 text-yellow-300 px-2 py-0.5 rounded text-xs whitespace-nowrap">{displayTime(t)}</span>)}
                                         <span className={`text-xs font-bold ${b.isConfirmed ? 'text-green-400' : 'text-yellow-400'}`}>{b.isConfirmed ? '已確認' : '待確認'}</span>
-                                        <span className="text-xs font-mono text-blue-400">後五碼 {b.transferCode}</span>
+                                        {b.transferCode && <span className="text-xs font-mono text-blue-400">後五碼 {b.transferCode}</span>}
                                       </div>
                                       {canMark ? (
                                         <button onClick={() => toggleNoShow(b.id)} className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors ${b.noShow ? 'bg-red-500 border-red-400 text-white hover:bg-red-400' : 'bg-blue-900 border-blue-600 text-blue-200 hover:border-red-400 hover:text-red-300'}`}>
