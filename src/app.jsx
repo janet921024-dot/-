@@ -147,6 +147,7 @@ function App() {
   const [pwdEditValue, setPwdEditValue] = useState('');
   const [adminTab, setAdminTab] = useState('list'); // 'list', 'calendar', 'customers', 'openplay', 'settings'
   const [listFilter, setListFilter] = useState('all');
+  const [listScope, setListScope] = useState('upcoming'); // 'upcoming' 還沒結束、'past' 已結束（只隱藏，不刪除）
   const [customerSearch, setCustomerSearch] = useState('');
   const [expandedPhone, setExpandedPhone] = useState(null);
 
@@ -1005,7 +1006,18 @@ function App() {
   }
 
   if (view === 'admin-panel') {
-    let sortedBookings = [...bookings].sort((a, b) => new Date(a.date) - new Date(b.date));
+    // 預約的最後一個時段結束後就算「已結束」，移到過去紀錄（資料保留，客人名單與爽約紀錄仍會用到）
+    const nowHour = new Date().getHours();
+    const isOver = (b) => {
+      const endHour = Math.max(...b.times.map(t => parseInt(t, 10))) + 1;
+      return b.date < todayString || (b.date === todayString && endHour <= nowHour);
+    };
+    const startKey = (b) => `${b.date} ${[...b.times].sort()[0]}`;
+    const upcomingBookings = bookings.filter(b => !isOver(b));
+    const pastBookings = bookings.filter(isOver);
+    let sortedBookings = listScope === 'upcoming'
+      ? [...upcomingBookings].sort((a, b) => startKey(a).localeCompare(startKey(b)))
+      : [...pastBookings].sort((a, b) => startKey(b).localeCompare(startKey(a)));
 
     if (listFilter === 'pending') {
       sortedBookings = sortedBookings.filter(b => !b.isConfirmed);
@@ -1015,7 +1027,7 @@ function App() {
       sortedBookings = sortedBookings.filter(b => b.isBulk);
     }
 
-    const pendingCount = bookings.filter(b => !b.isConfirmed).length;
+    const pendingCount = upcomingBookings.filter(b => !b.isConfirmed).length;
 
     // 客人名單：依電話整理臨打預約（週期預約為後台建立，不列入）
     const customerMap = {};
@@ -1100,7 +1112,13 @@ function App() {
           {/* 後台 - 預約列表 */}
           {adminTab === 'list' && (
             <div className="bg-blue-950 rounded-2xl border border-blue-800 overflow-hidden shadow-2xl">
-              <div className="bg-blue-900/50 p-4 border-b border-blue-800 flex gap-2 overflow-x-auto custom-scrollbar">
+              <div className="bg-blue-900/50 p-4 border-b border-blue-800 flex flex-wrap items-center gap-3">
+                <div className="flex bg-blue-950 rounded-lg p-1 border border-blue-700" role="radiogroup" aria-label="顯示範圍">
+                  {[['upcoming', `即將到來 (${upcomingBookings.length})`], ['past', `過去紀錄 (${pastBookings.length})`]].map(([scope, label]) => (
+                    <button key={scope} role="radio" aria-checked={listScope === scope} onClick={() => setListScope(scope)} className={`px-3 py-1.5 rounded-md text-sm font-bold whitespace-nowrap transition-colors ${listScope === scope ? 'bg-yellow-500 text-blue-950' : 'text-blue-300 hover:text-white'}`}>{label}</button>
+                  ))}
+                </div>
+              <div className="flex gap-2 overflow-x-auto custom-scrollbar">
                 <button onClick={() => setListFilter('all')} className={`px-4 py-1.5 rounded-full text-sm font-bold whitespace-nowrap transition-colors ${listFilter === 'all' ? 'bg-yellow-500 text-blue-950' : 'bg-blue-900 border border-blue-700 text-blue-300 hover:text-white'}`}>全部預約</button>
                 <button onClick={() => setListFilter('pending')} className={`px-4 py-1.5 rounded-full text-sm font-bold whitespace-nowrap transition-colors flex items-center ${listFilter === 'pending' ? 'bg-yellow-500 text-blue-950' : 'bg-blue-900 border border-blue-700 text-blue-300 hover:text-white'}`}>
                   待確認
@@ -1108,6 +1126,7 @@ function App() {
                 </button>
                 <button onClick={() => setListFilter('regular')} className={`px-4 py-1.5 rounded-full text-sm font-bold whitespace-nowrap transition-colors ${listFilter === 'regular' ? 'bg-yellow-500 text-blue-950' : 'bg-blue-900 border border-blue-700 text-blue-300 hover:text-white'}`}>臨打預約</button>
                 <button onClick={() => setListFilter('bulk')} className={`px-4 py-1.5 rounded-full text-sm font-bold whitespace-nowrap transition-colors ${listFilter === 'bulk' ? 'bg-yellow-500 text-blue-950' : 'bg-blue-900 border border-blue-700 text-blue-300 hover:text-white'}`}>週期預約</button>
+              </div>
               </div>
 
               <div className="overflow-x-auto">
@@ -1127,7 +1146,7 @@ function App() {
                   </thead>
                   <tbody className="divide-y divide-blue-800/50">
                     {sortedBookings.length === 0 ? (
-                      <tr><td colSpan="9" className="p-12 text-center text-blue-400 text-lg">此分類下目前尚無紀錄</td></tr>
+                      <tr><td colSpan="9" className="p-12 text-center text-blue-400 text-lg">{listScope === 'upcoming' ? '目前沒有還沒結束的預約' : '此分類下沒有過去紀錄'}</td></tr>
                     ) : (
                       sortedBookings.map(b => (
                         <tr key={b.id} className={`transition-colors ${b.isConfirmed ? 'bg-green-900/10 hover:bg-green-900/20' : 'hover:bg-blue-900/40'}`}>
