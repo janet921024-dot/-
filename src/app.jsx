@@ -1080,6 +1080,22 @@ function App() {
 
     const pendingCount = upcomingBookings.filter(b => !b.isConfirmed).length;
 
+    // 依日期分段（已經依日期、時段排好）
+    const bookingGroups = [];
+    sortedBookings.forEach(b => {
+      const last = bookingGroups[bookingGroups.length - 1];
+      if (last && last.date === b.date) last.items.push(b);
+      else bookingGroups.push({ date: b.date, items: [b] });
+    });
+    const tomorrowString = (() => { const d = new Date(today); d.setDate(d.getDate() + 1); return getLocalDateString(d); })();
+    const dateHeading = (dateStr) => {
+      const [, m, d] = dateStr.split('-').map(Number);
+      const weekday = ['日', '一', '二', '三', '四', '五', '六'][new Date(dateStr).getDay()];
+      const tag = dateStr === todayString ? '今天' : dateStr === tomorrowString ? '明天' : '';
+      return { label: `${m}/${d}（${weekday}）`, tag };
+    };
+    const listColumns = currentAdmin?.role === 'main' ? 8 : 7;
+
     // 客人名單：有手機號碼的依電話整理；週期預約與後台建立、沒有手機號碼的預約依名稱整理
     const customerMap = {};
     bookings.forEach(b => {
@@ -1188,12 +1204,11 @@ function App() {
               </div>
 
               <div className="overflow-x-auto">
-                <table className="w-full text-left text-sm text-blue-100 min-w-[1100px]">
+                <table className="w-full text-left text-sm text-blue-100 min-w-[960px]">
                   <thead className="bg-blue-900 text-yellow-500 font-semibold border-b-2 border-blue-800">
                     <tr>
                       <th className="p-4 whitespace-nowrap w-24">狀態</th>
                       <th className="p-4 whitespace-nowrap">類型</th>
-                      <th className="p-4 whitespace-nowrap">日期</th>
                       <th className="p-4">預約時段</th>
                       <th className="p-4 whitespace-nowrap">預約場地</th>
                       <th className="p-4 whitespace-nowrap">預約人姓名</th>
@@ -1204,9 +1219,24 @@ function App() {
                   </thead>
                   <tbody className="divide-y divide-blue-800/50">
                     {sortedBookings.length === 0 ? (
-                      <tr><td colSpan="9" className="p-12 text-center text-blue-400 text-lg">今天與以後沒有這類預約</td></tr>
+                      <tr><td colSpan={listColumns} className="p-12 text-center text-blue-400 text-lg">今天與以後沒有這類預約</td></tr>
                     ) : (
-                      sortedBookings.map(b => (
+                      bookingGroups.map(group => {
+                        const { label, tag } = dateHeading(group.date);
+                        const groupPending = group.items.filter(b => !b.isConfirmed).length;
+                        return (
+                      <React.Fragment key={group.date}>
+                        <tr className="bg-blue-900/80">
+                          <td colSpan={listColumns} className="px-4 py-2.5">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-white font-bold text-base">{label}</span>
+                              {tag && <span className={`px-2 py-0.5 rounded text-xs font-bold ${tag === '今天' ? 'bg-yellow-500 text-blue-950' : 'bg-blue-700 text-blue-100'}`}>{tag}</span>}
+                              <span className="text-blue-300 text-xs">{group.items.length} 筆</span>
+                              {groupPending > 0 && <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-red-500 text-white">待確認 {groupPending}</span>}
+                            </div>
+                          </td>
+                        </tr>
+                        {group.items.map(b => (
                         <tr key={b.id} className={`transition-colors ${b.isConfirmed ? 'bg-green-900/10 hover:bg-green-900/20' : 'hover:bg-blue-900/40'}`}>
                           <td className="p-4">
                             <label className="flex items-center cursor-pointer group">
@@ -1222,7 +1252,6 @@ function App() {
                               {b.isBulk ? '週期' : '臨打'}
                             </span>
                           </td>
-                          <td className="p-4 font-medium text-white">{b.date}</td>
                           <td className="p-4">
                             <div className="flex flex-wrap gap-2">
                               {b.times.map(t => <span key={t} className="bg-blue-800 border border-blue-700 text-yellow-300 px-2 py-1 rounded shadow-sm text-xs whitespace-nowrap">{displayTime(t)}</span>)}
@@ -1245,7 +1274,10 @@ function App() {
                             </td>
                           )}
                         </tr>
-                      ))
+                        ))}
+                      </React.Fragment>
+                        );
+                      })
                     )}
                   </tbody>
                 </table>
