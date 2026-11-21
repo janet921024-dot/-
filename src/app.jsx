@@ -160,7 +160,20 @@ function App() {
   const [customerTab, setCustomerTab] = useState('walkin'); // 客人名單分頁：'walkin' 臨打、'bulk' 週期、'coach' 教練
   const [customerCategories, setCustomerCategories] = useState({}); // { 客人識別: 'coach' }
   const [expandedPhone, setExpandedPhone] = useState(null);
-  const lastTapRef = useRef({ phone: null, at: 0 }); // 客人名單「點兩下」展開（滑鼠與手機觸控都適用）
+  const lastTapRef = useRef({ phone: null, at: 0 }); // 客人名單、預約列表「點兩下」展開（滑鼠與手機觸控都適用）
+  const [openDates, setOpenDates] = useState({}); // 預約列表中展開的日期 { 'YYYY-MM-DD': true }
+  // 同一個項目在 0.45 秒內點兩次才算「點兩下」
+  const isDoubleTap = (key) => {
+    const now = Date.now();
+    const last = lastTapRef.current;
+    if (last.phone === key && now - last.at < 450) {
+      lastTapRef.current = { phone: null, at: 0 };
+      return true;
+    }
+    lastTapRef.current = { phone: key, at: now };
+    return false;
+  };
+  const toggleDate = (date) => setOpenDates(prev => ({ ...prev, [date]: !prev[date] }));
 
   const [currentAdmin, setCurrentAdmin] = useState(null); // { role: 'main' | 'sub', email }
   const [shop, setShop] = useState(DEFAULT_SHOP);
@@ -1200,7 +1213,7 @@ function App() {
                 <button onClick={() => setListFilter('regular')} className={`px-4 py-1.5 rounded-full text-sm font-bold whitespace-nowrap transition-colors ${listFilter === 'regular' ? 'bg-yellow-500 text-blue-950' : 'bg-blue-900 border border-blue-700 text-blue-300 hover:text-white'}`}>臨打預約</button>
                 <button onClick={() => setListFilter('bulk')} className={`px-4 py-1.5 rounded-full text-sm font-bold whitespace-nowrap transition-colors ${listFilter === 'bulk' ? 'bg-yellow-500 text-blue-950' : 'bg-blue-900 border border-blue-700 text-blue-300 hover:text-white'}`}>週期預約</button>
               </div>
-                <p className="text-xs text-blue-300">顯示今天與以後的預約 · 以前的紀錄請到「客人名單」查看</p>
+                <p className="text-xs text-blue-300">在日期上<b className="text-yellow-400">點兩下</b>查看當天預約 · 以前的紀錄請到「客人名單」查看</p>
               </div>
 
               <div className="overflow-x-auto">
@@ -1226,17 +1239,25 @@ function App() {
                         const groupPending = group.items.filter(b => !b.isConfirmed).length;
                         return (
                       <React.Fragment key={group.date}>
-                        <tr className="bg-blue-900/80">
+                        <tr
+                          tabIndex={0}
+                          title="點兩下查看當天預約"
+                          aria-expanded={!!openDates[group.date]}
+                          onClick={() => { if (isDoubleTap(`date:${group.date}`)) toggleDate(group.date); }}
+                          onKeyDown={e => { if (e.key === 'Enter') toggleDate(group.date); }}
+                          className="bg-blue-900/80 cursor-pointer select-none hover:bg-blue-800/80 transition-colors">
                           <td colSpan={listColumns} className="px-4 py-2.5">
                             <div className="flex flex-wrap items-center gap-2">
+                              {openDates[group.date] ? <i className="fas fa-chevron-down text-blue-400 text-[12px]"></i> : <i className="fas fa-chevron-right text-blue-400 text-[12px]"></i>}
                               <span className="text-white font-bold text-base">{label}</span>
                               {tag && <span className={`px-2 py-0.5 rounded text-xs font-bold ${tag === '今天' ? 'bg-yellow-500 text-blue-950' : 'bg-blue-700 text-blue-100'}`}>{tag}</span>}
                               <span className="text-blue-300 text-xs">{group.items.length} 筆</span>
                               {groupPending > 0 && <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-red-500 text-white">待確認 {groupPending}</span>}
+                              {!openDates[group.date] && <span className="text-blue-400 text-xs ml-auto">點兩下查看</span>}
                             </div>
                           </td>
                         </tr>
-                        {group.items.map(b => (
+                        {openDates[group.date] && group.items.map(b => (
                         <tr key={b.id} className={`transition-colors ${b.isConfirmed ? 'bg-green-900/10 hover:bg-green-900/20' : 'hover:bg-blue-900/40'}`}>
                           <td className="p-4">
                             <label className="flex items-center cursor-pointer group">
@@ -1322,16 +1343,7 @@ function App() {
                           tabIndex={0}
                           title="點兩下查看過去紀錄"
                           aria-expanded={expandedPhone === c.key}
-                          onClick={() => {
-                            const now = Date.now();
-                            const last = lastTapRef.current;
-                            if (last.phone === c.key && now - last.at < 450) {
-                              setExpandedPhone(expandedPhone === c.key ? null : c.key);
-                              lastTapRef.current = { phone: null, at: 0 };
-                            } else {
-                              lastTapRef.current = { phone: c.key, at: now };
-                            }
-                          }}
+                          onClick={() => { if (isDoubleTap(c.key)) setExpandedPhone(expandedPhone === c.key ? null : c.key); }}
                           onKeyDown={e => { if (e.key === 'Enter') setExpandedPhone(expandedPhone === c.key ? null : c.key); }}
                           className={`cursor-pointer select-none transition-colors ${expandedPhone === c.key ? 'bg-blue-900/60' : 'hover:bg-blue-900/40'}`}>
                           <td className="p-4 font-bold text-white">{expandedPhone === c.key ? <i className="fas fa-chevron-down mr-2 text-blue-400 text-[12px]"></i> : <i className="fas fa-chevron-right mr-2 text-blue-400 text-[12px]"></i>}{c.name}</td>
