@@ -148,6 +148,8 @@ function App() {
   const [adminTab, setAdminTab] = useState('list'); // 'list', 'calendar', 'customers', 'openplay', 'settings'
   const [listFilter, setListFilter] = useState('all');
   const [customerSearch, setCustomerSearch] = useState('');
+  const [customerTab, setCustomerTab] = useState('walkin'); // 客人名單分頁：'walkin' 臨打、'bulk' 週期、'coach' 教練
+  const [customerCategories, setCustomerCategories] = useState({}); // { 客人識別: 'coach' }
   const [expandedPhone, setExpandedPhone] = useState(null);
   const lastTapRef = useRef({ phone: null, at: 0 }); // 客人名單「點兩下」展開（滑鼠與手機觸控都適用）
 
@@ -192,6 +194,9 @@ function App() {
   const loadAdmin = async () => {
     const { data, error } = await fetchAll(() => db.from('bookings').select('*').order('date').order('id'));
     if (!error) setAdminBookings(data.map(fromRow));
+    // 教練標記（還沒執行 007_customer_categories.sql 時讀不到，當作沒有教練）
+    const { data: cats } = await fetchAll(() => db.from('customer_categories').select('customer_key, category'));
+    setCustomerCategories(Object.fromEntries((cats || []).map(r => [r.customer_key, r.category])));
   };
 
   const refreshAll = () => {
@@ -239,6 +244,7 @@ function App() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'bookings' }, refreshSoon)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'open_play_overrides' }, refreshSoon)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'shop_settings' }, refreshSoon)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'customer_categories' }, refreshSoon)
       .subscribe();
     const poll = setInterval(refreshSoon, 60000);
     // 手機切到其他 App 再回來時，連線多半已被系統切斷：馬上重新連線並更新場地資料
@@ -611,6 +617,22 @@ function App() {
     const targetBooking = bookings.find(b => b.id === id);
     if (!targetBooking) return;
     updateBooking(id, { isConfirmed: !targetBooking.isConfirmed }, { is_confirmed: !targetBooking.isConfirmed });
+  };
+
+  const toggleCoach = async (key) => {
+    const isCoach = customerCategories[key] === 'coach';
+    const { error } = isCoach
+      ? await db.from('customer_categories').delete().eq('customer_key', key)
+      : await db.from('customer_categories').upsert({ customer_key: key, category: 'coach', updated_at: new Date().toISOString() });
+    if (error) {
+      alert(/customer_categories/.test(error.message || '') ? '資料庫還沒有教練分類功能，請先在 Supabase 執行 007_customer_categories.sql' : errorText(error));
+      return;
+    }
+    setCustomerCategories(prev => {
+      const next = { ...prev };
+      if (isCoach) delete next[key]; else next[key] = 'coach';
+      return next;
+    });
   };
 
   const toggleNoShow = (id) => {
@@ -1038,10 +1060,14 @@ function App() {
       return { ...c, otherPhone, bookings: byDate, name: byDate[0].name, lastDate: byDate[0].date, noShows: c.bookings.filter(b => b.noShow).length };
     });
     const noShowsByPhone = Object.fromEntries(customers.filter(c => c.kind === 'phone').map(c => [c.phone, c.noShows]));
+    // 分頁：被標記為教練的放「教練」，其餘週期預約放「週期」，其他放「臨打」
+    const tabOf = (c) => customerCategories[c.key] === 'coach' ? 'coach' : c.kind === 'bulk' ? 'bulk' : 'walkin';
+    const tabCounts = customers.reduce((n, c) => ({ ...n, [tabOf(c)]: (n[tabOf(c)] || 0) + 1 }), {});
     const term = customerSearch.trim().toLowerCase();
     const filteredCustomers = customers
+      .filter(c => tabOf(c) === customerTab)
       .filter(c => !term || c.name.toLowerCase().includes(term) || (c.phone || c.otherPhone).includes(term))
-      // 一般客人在前，再來是後台建立、週期預約（週期預約次數多，放前面會蓋過一般客人）
+      // 有手機號碼的客人在前，再來是後台建立、週期預約
       .sort((a, b) => ['phone', 'internal', 'bulk'].indexOf(a.kind) - ['phone', 'internal', 'bulk'].indexOf(b.kind)
         || b.bookings.length - a.bookings.length || b.lastDate.localeCompare(a.lastDate));
 
@@ -1193,12 +1219,19 @@ function App() {
           {/* 後台 - 客人名單 */}
           {adminTab === 'customers' && (
             <div className="bg-blue-950 rounded-2xl border border-blue-800 overflow-hidden shadow-2xl">
+              <div className="px-4 pt-4 bg-blue-900/50 flex gap-2 overflow-x-auto custom-scrollbar" role="tablist" aria-label="客人分類">
+                {[['walkin', '臨打'], ['bulk', '週期'], ['coach', '教練']].map(([tab, label]) => (
+                  <button key={tab} role="tab" aria-selected={customerTab === tab} onClick={() => { setCustomerTab(tab); setExpandedPhone(null); }} className={`px-5 py-2 rounded-t-lg text-sm font-bold whitespace-nowrap transition-colors ${customerTab === tab ? 'bg-yellow-500 text-blue-950' : 'bg-blue-900 text-blue-300 hover:text-white'}`}>
+                    {label} <span className={`ml-1 text-xs ${customerTab === tab ? 'text-blue-900' : 'text-blue-400'}`}>{tabCounts[tab] || 0}</span>
+                  </button>
+                ))}
+              </div>
               <div className="p-4 border-b border-blue-800 bg-blue-900/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div className="relative w-full max-w-sm">
                   <i className="fas fa-search absolute left-3 top-3 text-blue-400"></i>
                   <input id="customer-search" type="text" placeholder="輸入姓名或手機號碼搜尋..." value={customerSearch} onChange={e => setCustomerSearch(e.target.value)} className="w-full bg-blue-950 border border-blue-700 rounded-lg pl-10 pr-4 py-2 text-white focus:border-yellow-400 focus:outline-none placeholder-blue-600" />
                 </div>
-                <p className="text-xs text-blue-300">共 {customers.length} 筆（含週期預約） · 在那一列<b className="text-yellow-400">點兩下</b>，查看過去紀錄並標記爽約</p>
+                <p className="text-xs text-blue-300">在那一列<b className="text-yellow-400">點兩下</b>，查看過去紀錄、標記爽約或設為教練</p>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-sm text-blue-100 min-w-[720px]">
@@ -1213,7 +1246,7 @@ function App() {
                   </thead>
                   <tbody className="divide-y divide-blue-800/50">
                     {filteredCustomers.length === 0 ? (
-                      <tr><td colSpan="5" className="p-12 text-center text-blue-400 text-lg">{customers.length === 0 ? '還沒有客人預約過' : '找不到符合的客人'}</td></tr>
+                      <tr><td colSpan="5" className="p-12 text-center text-blue-400 text-lg">{term ? '找不到符合的客人' : { walkin: '還沒有臨打客人', bulk: '還沒有週期預約', coach: '還沒有教練。到「臨打」或「週期」點兩下客人，再按「設為教練」' }[customerTab]}</td></tr>
                     ) : filteredCustomers.map(c => (
                       <React.Fragment key={c.key}>
                         <tr
@@ -1254,7 +1287,12 @@ function App() {
                                 const upcomingCount = c.bookings.length - history.length;
                                 return (
                               <div className="space-y-2">
-                                <p className="text-sm font-bold text-yellow-400">過去紀錄（含今天）· {history.length} 筆{upcomingCount > 0 && <span className="text-blue-300 font-normal">　另有 {upcomingCount} 筆之後的預約，在「預約列表」</span>}</p>
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <p className="text-sm font-bold text-yellow-400">過去紀錄（含今天）· {history.length} 筆{upcomingCount > 0 && <span className="text-blue-300 font-normal">　另有 {upcomingCount} 筆之後的預約，在「預約列表」</span>}</p>
+                                  <button onClick={() => toggleCoach(c.key)} className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors ${customerCategories[c.key] === 'coach' ? 'bg-blue-900 border-blue-600 text-blue-200 hover:border-yellow-400' : 'bg-emerald-800 border-emerald-500 text-white hover:bg-emerald-700'}`}>
+                                    {customerCategories[c.key] === 'coach' ? '取消教練' : '設為教練'}
+                                  </button>
+                                </div>
                                 {history.length === 0 && <p className="text-xs text-blue-400">還沒有過去的預約紀錄。</p>}
                                 {history.map(b => {
                                   const canMark = b.date <= todayString;
