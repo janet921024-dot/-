@@ -327,8 +327,8 @@ function App() {
     if (openPlayOverrides[dateString] !== undefined) return openPlayOverrides[dateString];
 
     const day = new Date(dateString).getDay();
-    // 平日 (週一~週五) 預設保留第 2 場地
-    if (day >= 1 && day <= 5) return ["2"];
+    // 平日 (週一~週五) 預設保留第 2、3 場地（與 supabase/008_open_play_weekday_courts.sql 一致）
+    if (day >= 1 && day <= 5) return ["2", "3"];
     // 假日 (週六、日) 預設保留第 2, 3, 4 場地
     return ["2", "3", "4"];
   };

@@ -75,7 +75,7 @@ language sql stable security definer set search_path = public
 as $$
   select coalesce(
     (select courts from public.open_play_overrides where date = d),
-    case when extract(isodow from d) between 1 and 5 then array['2'] else array['2', '3', '4'] end
+    case when extract(isodow from d) between 1 and 5 then array['2', '3'] else array['2', '3', '4'] end
   )
 $$;
 

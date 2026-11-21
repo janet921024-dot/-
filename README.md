@@ -27,3 +27,4 @@ npm run build
 5. `supabase/005_system_health.sql`：每週自動檢查用，回報 Supabase 改版是否影響建立副管理員
 6. `supabase/006_rate_limits.sql`：防止濫用，同一個 IP 每小時最多成功預約 15 次、查詢 30 次
 7. `supabase/007_customer_categories.sql`：客人名單「教練」分類
+8. `supabase/008_open_play_weekday_courts.sql`：平日預設暢打場地改為第 2、3 場
