@@ -647,6 +647,30 @@ function App() {
     loadAdmins();
   };
 
+  // 預約的最後一個時段已經結束
+  const isBookingOver = (b) => {
+    const endHour = Math.max(...b.times.map(t => parseInt(t, 10))) + 1;
+    return b.date < todayString || (b.date === todayString && endHour <= new Date().getHours());
+  };
+
+  // 週期預約整批取消：只取消還沒結束的場次，已經過去的紀錄保留
+  const cancelSeries = async (name) => {
+    if (currentAdmin?.role !== 'main') { alert('只有主管理員可以取消週期預約！'); return; }
+    const targets = adminBookings
+      .filter(b => b.isBulk && b.name.trim() === name.trim() && !isBookingOver(b))
+      .sort((a, b) => a.date.localeCompare(b.date));
+    if (targets.length === 0) { alert(`「${name}」沒有還沒結束的週期預約。`); return; }
+    const range = targets.length === 1 ? targets[0].date : `${targets[0].date} ～ ${targets[targets.length - 1].date}`;
+    if (!window.confirm(`確定要取消「${name}」還沒打的全部週期預約嗎？\n\n共 ${targets.length} 筆（${range}）\n取消後這些時段/場地會釋出，已經過去的紀錄會保留。`)) return;
+    const ids = targets.map(b => b.id);
+    for (let i = 0; i < ids.length; i += 100) {
+      const { error } = await db.from('bookings').delete().in('id', ids.slice(i, i + 100));
+      if (error) { alert(errorText(error)); refreshAll(); return; }
+    }
+    refreshAll();
+    alert(`已取消「${name}」的 ${targets.length} 筆週期預約。`);
+  };
+
   const deleteBooking = async (id) => {
     if (currentAdmin?.role !== 'main') { alert('只有主管理員可以刪除預約！'); return; }
     if (!window.confirm('確定要刪除這筆預約嗎？刪除後該時段/場地將會釋出。')) return;
@@ -1291,7 +1315,10 @@ function App() {
                           </td>
                           {currentAdmin?.role === 'main' && (
                             <td className="p-4 text-center">
-                              <button onClick={() => deleteBooking(b.id)} className="p-2 text-red-400 hover:bg-red-500 hover:text-white rounded-lg transition-all inline-flex items-center shadow-sm" title="刪除"><i className="fas fa-trash-alt text-[18px]"></i></button>
+                              <div className="flex items-center justify-center gap-1">
+                                <button onClick={() => deleteBooking(b.id)} className="p-2 text-red-400 hover:bg-red-500 hover:text-white rounded-lg transition-all inline-flex items-center shadow-sm" title={b.isBulk ? '只刪除這一筆' : '刪除'}><i className="fas fa-trash-alt text-[18px]"></i></button>
+                                {b.isBulk && <button onClick={() => cancelSeries(b.name)} className="px-2 py-1 text-[11px] font-bold text-red-300 border border-red-800 bg-red-950/60 hover:bg-red-600 hover:text-white rounded-lg whitespace-nowrap" title="取消這個週期預約還沒打的全部場次">整批取消</button>}
+                              </div>
                             </td>
                           )}
                         </tr>
@@ -1370,9 +1397,14 @@ function App() {
                               <div className="space-y-2">
                                 <div className="flex flex-wrap items-center justify-between gap-2">
                                   <p className="text-sm font-bold text-yellow-400">過去紀錄（含今天）· {history.length} 筆{upcomingCount > 0 && <span className="text-blue-300 font-normal">　另有 {upcomingCount} 筆之後的預約，在「預約列表」</span>}</p>
-                                  <button onClick={() => toggleCoach(c.key)} className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors ${customerCategories[c.key] === 'coach' ? 'bg-blue-900 border-blue-600 text-blue-200 hover:border-yellow-400' : 'bg-emerald-800 border-emerald-500 text-white hover:bg-emerald-700'}`}>
-                                    {customerCategories[c.key] === 'coach' ? '取消教練' : '設為教練'}
-                                  </button>
+                                  <div className="flex flex-wrap gap-2">
+                                    {c.kind === 'bulk' && currentAdmin?.role === 'main' && upcomingCount > 0 && (
+                                      <button onClick={() => cancelSeries(c.name)} className="px-3 py-1.5 rounded-lg text-xs font-bold border border-red-700 bg-red-900 text-red-200 hover:bg-red-600 hover:text-white transition-colors">整批取消之後的預約</button>
+                                    )}
+                                    <button onClick={() => toggleCoach(c.key)} className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors ${customerCategories[c.key] === 'coach' ? 'bg-blue-900 border-blue-600 text-blue-200 hover:border-yellow-400' : 'bg-emerald-800 border-emerald-500 text-white hover:bg-emerald-700'}`}>
+                                      {customerCategories[c.key] === 'coach' ? '取消教練' : '設為教練'}
+                                    </button>
+                                  </div>
                                 </div>
                                 {history.length === 0 && <p className="text-xs text-blue-400">還沒有過去的預約紀錄。</p>}
                                 {history.map(b => {
